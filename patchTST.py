@@ -539,10 +539,10 @@ def _fetch_single_dataset(dsid, from_date, to_date, access_token):
         return None
 
 # =========================
-# 환경 변수 로드 (디버깅 로그 추가)
+# 환경 변수 로드
 # =========================
 print("=" * 60)
-print("🔍 환경변수 로드 과정 디버깅")
+print("🔍 환경변수 로드")
 print("=" * 60)
 
 # .env 파일 경로 확인
@@ -556,14 +556,10 @@ load_result = load_dotenv(env_path, verbose=True, override=True)
 print(f"4. .env 로드 결과: {load_result}")
 
 # 환경변수 확인
-use_api_raw = os.getenv('USE_API')
-use_api_bool = os.getenv('USE_API', 'false').lower() == 'true'
 dsid = os.getenv('DSID')
 api_url = os.getenv('API_URL')
 
 print(f"\n📋 환경변수 값:")
-print(f"   - USE_API (원본): '{use_api_raw}'")
-print(f"   - USE_API (boolean): {use_api_bool}")
 print(f"   - DSID: '{dsid}'")
 print(f"   - API_URL: '{api_url}'")
 print("=" * 60 + "\n")
@@ -572,10 +568,6 @@ print("=" * 60 + "\n")
 # Paths & device
 # =========================
 BASE_DIR = Path.cwd()
-# 우선순위로 탐색 (새 파일 -> 구 파일들)
-CANDIDATE_CSVS = [
-    BASE_DIR / "suyeong/3_merged_influenza_vaccine_respiratory_weather.csv",
-]
 
 # =========================
 # API 데이터 로딩 함수
@@ -953,13 +945,7 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def read_csv_kor(path: Path) -> pd.DataFrame:
-    for enc in ["euc-kr", "cp949", "utf-8-sig", "utf-8"]:
-        try:
-            return pd.read_csv(path, encoding=enc)
-        except Exception:
-            pass
-    return pd.read_csv(path, encoding="utf-8", errors="replace")
+
 
 def make_splits(n: int, train_ratio=0.7, val_ratio=0.15):
     n_train = int(n * train_ratio)
@@ -981,7 +967,7 @@ def _norm_season_text(s: str) -> str:
 # =========================
 # data loader (multivariate-ready)
 # =========================
-def load_and_prepare(csv_path: Path = None, use_exog: str = "auto", df: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, list, list]:
+def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarray, np.ndarray, list, list]:
     """
     Returns:
         X: (N, F) features (first column should be 'ili' to align with univariate fallback)
@@ -990,16 +976,13 @@ def load_and_prepare(csv_path: Path = None, use_exog: str = "auto", df: pd.DataF
         used_feat_names: list[str] feature column names (len=F)
     
     Parameters:
-        csv_path: CSV 파일 경로 (df가 None일 때 사용)
+        df: API에서 가져온 DataFrame
         use_exog: 외생변수 사용 모드
-        df: 이미 로드된 DataFrame (API에서 가져온 경우)
     """
     if df is None:
-        if csv_path is None:
-            raise ValueError("csv_path와 df 중 하나는 반드시 제공되어야 합니다.")
-        df = read_csv_kor(csv_path).copy()
-    else:
-        df = df.copy()
+        raise ValueError("df는 반드시 제공되어야 합니다. API를 통해 데이터를 먼저 로드하세요.")
+    
+    df = df.copy()
     df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
     # 정렬
 # 정렬: 주→일 변환 후에는 date 기준으로만 정렬
@@ -1538,57 +1521,34 @@ if __name__ == "__main__":
     print("데이터 로드 및 모델 학습 시작!")
     print("🚀 " * 30 + "\n")
     
-    # API 또는 CSV에서 데이터 로드
-    # 환경변수 USE_API=true로 설정하면 API 사용, 아니면 CSV 사용
-    USE_API_MODE = os.getenv('USE_API', 'false').lower() == 'true'
+    print("=" * 60)
+    print("🌐 API 모드: Python에서 직접 GFID API 호출")
+    print("=" * 60)
     
-    if USE_API_MODE:
-        print("=" * 60)
-        print("🌐 API 모드: Python에서 직접 GFID API 호출")
-        print("=" * 60)
-        
-        # Python에서 직접 Keycloak 인증 후 GFID API 호출
-        df = fetch_data_directly_from_gfid()
-        
-        print("\n" + "✅ " * 30)
-        print("API 데이터 로드 완료!")
-        print("✅ " * 30 + "\n")
-        
-        # 데이터 확인
-        print(f"📊 DataFrame 정보:")
-        print(f"   - Shape: {df.shape}")
-        print(f"   - Columns: {list(df.columns)}")
-        print(f"\n처음 5개 행:")
-        print(df.head())
-        print(f"\n데이터 타입:")
-        print(df.dtypes)
-        
-        print(f"\n🔧 USE_EXOG = '{USE_EXOG}'  (auto-detects vaccine/resp columns)")
-        
-        # DataFrame을 직접 전달하여 전처리
-        print("\n📈 데이터 전처리 및 특징 추출 중...")
-        X, y, labels, feat_names = load_and_prepare(df=df, use_exog=USE_EXOG)
-        print(f"✅ 전처리 완료!")
-        print(f"   - Data points: {len(y)}")
-        print(f"   - Features used ({len(feat_names)}): {feat_names}")
-        
-    else:
-        print("=" * 60)
-        print("📁 CSV 모드: 로컬 파일에서 데이터를 로드합니다.")
-        print("=" * 60)
-        
-        if CSV_PATH is None:
-            raise FileNotFoundError("CSV 파일을 찾을 수 없습니다. USE_API=true로 설정하거나 CSV 파일을 준비하세요.")
-        
-        print(f"   - CSV 파일: {CSV_PATH.name}")
-        print(f"   - Device: {DEVICE}")
-        print(f"   - USE_EXOG: '{USE_EXOG}'")
-        
-        print("\n📈 데이터 로드 및 전처리 중...")
-        X, y, labels, feat_names = load_and_prepare(CSV_PATH, USE_EXOG)
-        print(f"✅ CSV 로드 및 전처리 완료!")
-        print(f"   - Data points: {len(y)}")
-        print(f"   - Features used ({len(feat_names)}): {feat_names}")
+    # Python에서 직접 Keycloak 인증 후 GFID API 호출
+    df = fetch_data_directly_from_gfid()
+    
+    print("\n" + "✅ " * 30)
+    print("API 데이터 로드 완료!")
+    print("✅ " * 30 + "\n")
+    
+    # 데이터 확인
+    print(f"📊 DataFrame 정보:")
+    print(f"   - Shape: {df.shape}")
+    print(f"   - Columns: {list(df.columns)}")
+    print(f"\n처음 5개 행:")
+    print(df.head())
+    print(f"\n데이터 타입:")
+    print(df.dtypes)
+    
+    print(f"\n🔧 USE_EXOG = '{USE_EXOG}'  (auto-detects vaccine/resp columns)")
+    
+    # DataFrame을 직접 전달하여 전처리
+    print("\n📈 데이터 전처리 및 특징 추출 중...")
+    X, y, labels, feat_names = load_and_prepare(df=df, use_exog=USE_EXOG)
+    print(f"✅ 전처리 완료!")
+    print(f"   - Data points: {len(y)}")
+    print(f"   - Features used ({len(feat_names)}): {feat_names}")
     
     # 모델 학습 및 평가
     print("\n" + "🎯 " * 30)
