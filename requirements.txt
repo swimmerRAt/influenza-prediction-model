@@ -12,5 +12,8 @@ torch
 requests
 python-dotenv
 
+# Database (시계열 데이터 관리)
+duckdb
+
 # 추가 유틸리티
 scipy

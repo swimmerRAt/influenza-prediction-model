@@ -33,7 +33,7 @@ app.get('/auth/status', async (req, res) => {
 
 app.post('/download', async (req, res) => {
 	try {
-		const { dsid } = req.body;
+		const { dsid, returnData } = req.body;
 		const dataset = dsid || process.env.DSID;
 		if (!dataset) return res.status(400).json({ ok: false, error: 'dsid missing' });
 
@@ -44,6 +44,23 @@ app.post('/download', async (req, res) => {
 		if (gfid.logStructured) gfid.logStructured('info', { dsid: dataset, msg: 'single_download_start' });
 		const result = await gfid.downloadDataset(dataset, outDir);
 		if (gfid.logStructured) gfid.logStructured('info', { dsid: dataset, msg: 'single_download_result', totalFetched: result.totalFetched, pages: result.pageFiles ? result.pageFiles.length : 0 });
+		
+		// returnData=true인 경우 파일 대신 데이터를 직접 반환
+		if (returnData) {
+			const allData = [];
+			if (result.pageFiles && result.pageFiles.length > 0) {
+				for (const pageFile of result.pageFiles) {
+					if (fs.existsSync(pageFile)) {
+						const fileData = JSON.parse(fs.readFileSync(pageFile, 'utf8'));
+						allData.push(...fileData);
+						// 파일 읽은 후 삭제 (로컬에 저장하지 않음)
+						fs.unlinkSync(pageFile);
+					}
+				}
+			}
+			return res.json({ ok: true, result: { data: allData, totalFetched: result.totalFetched } });
+		}
+		
 		res.json({ ok: true, result });
 	} catch (err) {
 		res.status(500).json({ ok: false, error: err.message });

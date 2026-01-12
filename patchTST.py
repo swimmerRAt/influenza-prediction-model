@@ -5,34 +5,20 @@ import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import requests
-import json
 import os
 from dotenv import load_dotenv
-import warnings
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 
-# SSL 경고 무시
-warnings.filterwarnings('ignore', message='Unverified HTTPS request')
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# DuckDB for efficient data loading
+from database.db_utils import TimeSeriesDB, load_from_duckdb
 
 # =========================
-# 데이터셋 ID 리스트 정의
+# 환경 변수 로드
 # =========================
-DATASET_IDS = [
-    'ds_0101', 'ds_0102', 'ds_0103', 'ds_0104', 'ds_0105', 'ds_0106', 'ds_0107', 'ds_0108', 'ds_0109', 'ds_0110',
-    'ds_0701', 'ds_0801', 'ds_0901'
-]
-
-# =========================
-# 서버 과부하 방지 Rate Limiter
-# =========================
-class AdaptiveRateLimiter:
     """
     서버 상태를 모니터링하고 자동으로 요청 속도를 조절하는 클래스
     
@@ -692,18 +678,20 @@ def fetch_data_from_api(dsid=None, api_url=None, _skip_rate_limiter=False):
         raise Exception(f"데이터 가져오기 실패: {str(e)}")
 
 
-def load_data_from_api_or_csv(use_api=None, dsid=None, csv_path=None):
+def load_data_from_api_or_csv(use_api=None, dsid=None, csv_path=None, use_duckdb=None):
     """
-    API 또는 로컬 CSV 파일에서 데이터를 로드하는 통합 함수
+    API, DuckDB, 또는 로컬 CSV 파일에서 데이터를 로드하는 통합 함수
     
     Parameters:
     -----------
     use_api : bool, optional
-        True면 API 사용, False면 CSV 파일 사용 (기본값: 환경변수 USE_API)
+        True면 API 사용, False면 로컬 파일 사용 (기본값: 환경변수 USE_API)
     dsid : str, optional
         API 사용 시 데이터셋 ID
     csv_path : Path, optional
         CSV 사용 시 파일 경로
+    use_duckdb : bool, optional
+        True면 DuckDB 사용, False면 CSV 직접 로드 (기본값: 환경변수 USE_DUCKDB)
     
     Returns:
     --------
@@ -714,7 +702,10 @@ def load_data_from_api_or_csv(use_api=None, dsid=None, csv_path=None):
     if use_api is None:
         use_api = os.getenv('USE_API', 'false').lower() == 'true'
     
-    print(f"\n📊 데이터 로드 모드 결정: use_api={use_api}")
+    if use_duckdb is None:
+        use_duckdb = os.getenv('USE_DUCKDB', 'true').lower() == 'true'
+    
+    print(f"\n📊 데이터 로드 모드 결정: use_api={use_api}, use_duckdb={use_duckdb}")
     
     if use_api:
         print("=" * 50)
@@ -724,14 +715,46 @@ def load_data_from_api_or_csv(use_api=None, dsid=None, csv_path=None):
         print(f"✅ API로부터 데이터 로드 완료: {df.shape}")
         return df
     else:
-        print("=" * 50)
-        print("📁 CSV 모드: 로컬 파일에서 데이터를 로드합니다...")
-        print("=" * 50)
-        if csv_path is None:
-            csv_path = pick_csv_path()
-        df = pd.read_csv(csv_path)
-        print(f"✅ CSV 파일 로드 완료: {csv_path}, {df.shape}")
-        return df
+        # DuckDB 사용 여부 확인
+        db_path = Path("influenza_data.duckdb")
+        
+        if use_duckdb and db_path.exists():
+            print("=" * 50)
+            print("💾 DuckDB 모드: 데이터베이스에서 로드합니다...")
+            print("=" * 50)
+            try:
+                df = load_from_duckdb(
+                    db_path=str(db_path),
+                    table_name="influenza_data"
+                )
+                print(f"✅ DuckDB 로드 완료: {df.shape}")
+                return df
+            except Exception as e:
+                print(f"⚠️ DuckDB 로드 실패: {e}")
+                print(f"📁 CSV 파일로 전환합니다...")
+                use_duckdb = False
+        
+        if not use_duckdb or not db_path.exists():
+            print("=" * 50)
+            print("📁 CSV 모드: 로컬 파일에서 데이터를 로드합니다...")
+            print("=" * 50)
+            if csv_path is None:
+                csv_path = pick_csv_path()
+            
+            # CSV 파일이 크면 DuckDB로 변환 제안
+            csv_size_mb = csv_path.stat().st_size / (1024 * 1024)
+            if csv_size_mb > 100:  # 100MB 이상
+                print(f"\n💡 팁: CSV 파일이 {csv_size_mb:.1f}MB로 큽니다.")
+                print(f"   DuckDB로 변환하면 로딩 속도가 10~100배 빨라집니다!")
+                print(f"   다음 명령어로 변환하세요:")
+                print(f"   python db_utils.py\n")
+            
+            print(f"CSV 파일 로드 중... (시간이 걸릴 수 있습니다)")
+            start_time = time.time()
+            df = pd.read_csv(csv_path)
+            elapsed = time.time() - start_time
+            print(f"✅ CSV 파일 로드 완료: {csv_path}, {df.shape} ({elapsed:.2f}초)")
+            return df
 
 def pick_csv_path():
     for p in CANDIDATE_CSVS:
