@@ -1,0 +1,149 @@
+{
+	"info": {
+		"_postman_id": "95702d55-5ef7-4a0b-b896-211f0bd27302",
+		"name": "GFID-DATA-API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "9059846",
+		"_collection_link": "https://a00000-3077.postman.co/workspace/GFID~ad0c4566-3703-4e62-96bc-7764d9557a80/collection/9059846-95702d55-5ef7-4a0b-b896-211f0bd27302?action=share&source=collection_link&creator=9059846"
+	},
+	"item": [
+		{
+			"name": "auth",
+			"item": [
+				{
+					"name": "hello cleint authentication",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const result = pm.response.json();\r",
+									"//pm.globals.set(\"access_token\", result.access_token);\r",
+									"const token = result.access_token;\r",
+									"pm.environment.set(\"auth_token\", token);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": [
+								{
+									"key": "client_id",
+									"value": "{{CLIENT_ID}}",
+									"type": "text"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{CLIENT_SECRET}}",
+									"type": "text"
+								},
+								{
+									"key": "grant_type",
+									"value": "client_credentials",
+									"type": "text"
+								}
+							]
+						},
+						"url": "{{SERVER_URL}}/realms/{{REALM}}/protocol/openid-connect/token"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "etl-data",
+			"item": [
+				{
+					"name": "자동수집 데이터중 특정 id의 최근 n건 데이터 조회",
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": {
+								"token": "{{auth_token}}"
+							}
+						},
+						"method": "GET",
+						"header": [],
+						"body": {
+							"mode": "urlencoded",
+							"urlencoded": []
+						},
+						"url": "http://211.238.12.60:8084/data/api/v1/etl_data/id/{{dsid}}/recent/{{cnt}}"
+					},
+					"response": []
+				},
+				{
+					"name": "자동수집 데이터중 특정 id의 특정 기간 데이터 조회",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": {
+								"token": "{{auth_token}}"
+							}
+						},
+						"method": "GET",
+						"header": [],
+						"url": "http://211.238.12.60:8084/data/api/v1/etl_data/id/{{dsid}}/from/{{from}}/to/{{to}}"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "etl-data-statics",
+			"item": [
+				{
+					"name": "자동수집 데이터중 id별 총 데이터 수 조회",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": {
+								"token": "{{auth_token}}"
+							}
+						},
+						"method": "GET",
+						"header": [],
+						"url": "http://211.238.12.60:8084/data/api/v1/etl_data/statistics"
+					},
+					"response": []
+				},
+				{
+					"name": "자동수집 데이터중 id별 특정 기간내 총 데이터 수 조회",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": {
+								"token": "{{auth_token}}"
+							}
+						},
+						"method": "GET",
+						"header": [],
+						"url": "http://211.238.12.60:8084/data/api/v1/etl_data/statistics/from/{{from}}/to/{{to}}"
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
