@@ -43,7 +43,8 @@ if __name__ == "__main__":
             db_path="influenza_data.duckdb",
             table_name="influenza_data",
             fetch_latest=True,  # API에서 최신 데이터 가져오기
-            before_dir='data/before'
+            before_dir='data/before',
+            consolidate=True  # 수정된 병합 로직 사용
         )
         
         print("\n" + "="*60)

@@ -504,31 +504,179 @@ def load_historical_data(before_dir: str = 'data/before') -> pd.DataFrame:
     return df_historical
 
 
+def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    데이터셋별 데이터를 올바르게 통합:
+    - 연도+주차+연령대를 기본 키로 사용하여 연령대별 데이터 유지
+    - 아형 데이터: 우세 아형을 각 연령대 행에 추가
+    - 입원환자 수: 같은 키를 가진 여러 데이터셋의 값을 합산
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        병합할 데이터프레임
+    
+    Returns:
+    --------
+    pd.DataFrame
+        올바르게 통합된 데이터프레임
+    """
+    print("\n🔄 데이터 통합 중...")
+    print(f"통합 전: {len(df)} 행")
+    
+    # 연도와 주차 컬럼이 있는지 확인
+    if '연도' not in df.columns or '주차' not in df.columns:
+        print("⚠️ '연도' 또는 '주차' 컬럼이 없습니다. 통합하지 않고 반환합니다.")
+        return df
+    
+    # 메타데이터 컬럼 제거
+    meta_columns = ['dsId', 'origin', 'contentType', 'originalData', 'parsedData', 'collectedAt', 'id']
+    columns_to_drop = [col for col in meta_columns if col in df.columns]
+    
+    if columns_to_drop:
+        print(f"메타데이터 컬럼 제거: {columns_to_drop}")
+        df = df.drop(columns=columns_to_drop)
+    
+    # 1단계: 아형 데이터 추출 (연도+주차별 우세 아형)
+    dominant_subtypes = pd.DataFrame()
+    if '아형' in df.columns and '인플루엔자 검출률' in df.columns:
+        print("\n[1단계] 아형 데이터 처리: 연도/주차별 최고 검출률 아형 선택")
+        
+        # '검출률' 값 제거 및 아형 데이터만 추출
+        df_subtype = df[(df['아형'].notna()) & (df['아형'] != '검출률')].copy()
+        
+        if not df_subtype.empty:
+            # 각 연도/주차에서 가장 높은 검출률을 가진 아형 찾기
+            idx_max = df_subtype.groupby(['연도', '주차'])['인플루엔자 검출률'].idxmax()
+            dominant_subtypes = df_subtype.loc[idx_max, ['연도', '주차', '아형']].copy()
+            print(f"  추출된 우세 아형: {len(dominant_subtypes)} 건")
+            
+            # 아형 행 제거 (연령대 기반 행만 유지)
+            df = df[df['아형'].isna() | (df['아형'] == '검출률')].copy()
+            if '아형' in df.columns:
+                df = df.drop(columns=['아형'])
+    
+    # 2단계: 연령대 기반 데이터 통합
+    print(f"\n[2단계] 연령대별 데이터 통합")
+    
+    # 그룹화 키: 연도, 주차, 연령대
+    if '연령대' not in df.columns:
+        print("⚠️ '연령대' 컬럼이 없습니다.")
+        groupby_cols = ['연도', '주차']
+    else:
+        groupby_cols = ['연도', '주차', '연령대']
+    
+    # 각 컬럼별 집계 방식 정의
+    aggregation_dict = {}
+    
+    for col in df.columns:
+        if col in groupby_cols:
+            continue
+        elif col == 'dataset_id':
+            # dataset_id는 나중에 제거
+            aggregation_dict[col] = lambda x: ', '.join(sorted(set(str(v) for v in x if pd.notna(v))))
+        elif col == '입원환자 수':
+            # 입원환자 수는 합산 (ds_0103 + ds_0104)
+            def sum_patients(x):
+                values = [v for v in x if pd.notna(v)]
+                if not values:
+                    return None
+                # 숫자로 변환 가능한 값만 합산
+                numeric_values = []
+                for v in values:
+                    try:
+                        numeric_values.append(float(v))
+                    except:
+                        pass
+                return sum(numeric_values) if numeric_values else None
+            
+            aggregation_dict[col] = sum_patients
+        elif col == '응급실 인플루엔자 환자':
+            # 응급실 환자도 합산
+            def sum_emergency(x):
+                values = [v for v in x if pd.notna(v)]
+                if not values:
+                    return None
+                numeric_values = []
+                for v in values:
+                    try:
+                        numeric_values.append(float(v))
+                    except:
+                        pass
+                return sum(numeric_values) if numeric_values else None
+            
+            aggregation_dict[col] = sum_emergency
+        elif col in ['의사환자 분율', '예방접종률']:
+            # 평균값 사용
+            aggregation_dict[col] = lambda x: pd.Series([v for v in x if pd.notna(v)]).mean() if any(pd.notna(v) for v in x) else None
+        else:
+            # 기타: 첫 번째 유효값
+            aggregation_dict[col] = lambda x: next((v for v in x if pd.notna(v)), None)
+    
+    # 그룹화 및 집계
+    df_consolidated = df.groupby(groupby_cols, as_index=False).agg(aggregation_dict)
+    
+    # 3단계: 우세 아형 정보 병합
+    if not dominant_subtypes.empty:
+        print(f"\n[3단계] 우세 아형 정보 병합")
+        df_consolidated = pd.merge(
+            df_consolidated, 
+            dominant_subtypes, 
+            on=['연도', '주차'], 
+            how='left'
+        )
+        print(f"  아형 정보 추가 완료")
+    
+    # dataset_id 컬럼 제거
+    if 'dataset_id' in df_consolidated.columns:
+        df_consolidated = df_consolidated.drop(columns=['dataset_id'])
+    
+    print(f"\n통합 후: {len(df_consolidated)} 행")
+    
+    # 통합 결과 요약
+    if '연령대' in df_consolidated.columns:
+        age_groups = df_consolidated['연령대'].unique()
+        print(f"고유 연령대: {len(age_groups)}개 - {', '.join(sorted(age_groups)[:10])}")
+    
+    if '아형' in df_consolidated.columns:
+        subtypes = df_consolidated['아형'].value_counts()
+        print(f"\n아형 분포:")
+        for subtype, count in subtypes.items():
+            print(f"  {subtype}: {count}건")
+    
+    return df_consolidated
+
+
 def merge_and_update_database(
     db_path: str = "influenza_data.duckdb",
     table_name: str = "influenza_data",
     fetch_latest: bool = True,
     api_url: str = None,
-    before_dir: str = 'data/before'
+    before_dir: str = 'data/before',
+    consolidate: bool = True
 ):
     """
-    1. API로 최신 데이터 가져오기
-    2. 과거 데이터 로딩
-    3. 데이터 병합
-    4. DuckDB에 저장
-    
-    Parameters:
-    -----------
-    db_path : str
-        DuckDB 데이터베이스 파일 경로
-    table_name : str
-        테이블 이름
-    fetch_latest : bool
-        API에서 최신 데이터를 가져올지 여부
-    api_url : str, optional
-        API 서버 URL
+    1.4. DuckDB에 저장
+    print("\n[단계 4/4] DuckDB 저장")
+    with TimeSeriesDB(db_path) as db:
+        print(f"DuckDB에 저장 중...")
+        start_time = time.time()
+        
+        # 기존 테이블 삭제 후 새로 생성
+        db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df_merged")
+        
+        elapsed = time.time() - start_time
+        row_count = db.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        
+        print(f"✅ DuckDB 저장 완료!")
+        print(f"   • 테이블: {table_name}")
+        print(f"   • 행 수: {row_count:,}")
+        print(f"   • 컬럼 수: {len(df_merged.columns)
     before_dir : str
         과거 데이터 디렉토리
+    consolidate : bool
+        같은 연도/주차 데이터를 한 행으로 통합할지 여부 (기본: True)
     """
     print("\n" + "="*60)
     print("🔄 데이터 병합 및 DuckDB 업데이트 프로세스")
@@ -538,7 +686,7 @@ def merge_and_update_database(
     
     # 1. API에서 최신 데이터 가져오기
     if fetch_latest:
-        print("\n[단계 1/3] API에서 최신 데이터 가져오기")
+        print("\n[단계 1/4] API에서 최신 데이터 가져오기")
         df_latest = fetch_latest_data_from_api(api_url=api_url)
         if not df_latest.empty:
             all_data.append(df_latest)
@@ -546,10 +694,10 @@ def merge_and_update_database(
         else:
             print("⚠️ 최신 데이터 없음")
     else:
-        print("\n[단계 1/3] 최신 데이터 가져오기 건너뜀")
+        print("\n[단계 1/4] 최신 데이터 가져오기 건너뜀")
     
     # 2. 과거 데이터 로딩
-    print("\n[단계 2/2] 과거 데이터 로딩")
+    print("\n[단계 2/4] 과거 데이터 로딩")
     df_historical = load_historical_data(before_dir=before_dir)
     if not df_historical.empty:
         all_data.append(df_historical)
@@ -558,21 +706,17 @@ def merge_and_update_database(
         print("⚠️ 과거 데이터 없음")
     
     # 3. 모든 데이터 병합
-    print("\n[단계 3/3] 데이터 병합 및 DuckDB 저장")
+    print("\n[단계 3/4] 데이터 병합")
     if not all_data:
         print("⚠️ 병합할 데이터가 없습니다!")
         return
     
     df_merged = pd.concat(all_data, ignore_index=True)
+    print(f"초기 병합 데이터: {df_merged.shape}")
     
-    # 중복 제거 (year, week, dataset_id 기준)
-    if all(['year' in df_merged.columns, 'week' in df_merged.columns]):
-        print(f"중복 제거 전: {len(df_merged)} 행")
-        df_merged = df_merged.drop_duplicates(
-            subset=['year', 'week'] if 'dataset_id' not in df_merged.columns else ['year', 'week', 'dataset_id'],
-            keep='last'
-        )
-        print(f"중복 제거 후: {len(df_merged)} 행")
+    # 3-1. 데이터 통합 (같은 연도/주차를 한 행으로)
+    if consolidate:
+        df_merged = consolidate_by_year_week(df_merged)
     
     print(f"\n최종 병합 데이터: {df_merged.shape}")
     
@@ -596,12 +740,10 @@ def merge_and_update_database(
         db.optimize_database()
     
     # CSV로도 저장 (백업)
-    csv_output_dir = Path("data/merged")
-    csv_output_dir.mkdir(parents=True, exist_ok=True)
-    csv_output = csv_output_dir / "merged_influenza_data.csv"
+    csv_output = "merged_influenza_data.csv"
     print(f"\nCSV 백업 저장 중: {csv_output}")
     df_merged.to_csv(csv_output, index=False)
-    csv_size_mb = csv_output.stat().st_size / (1024 * 1024)
+    csv_size_mb = Path(csv_output).stat().st_size / (1024 * 1024)
     print(f"✅ CSV 저장 완료: {csv_size_mb:.1f} MB")
     
     print("\n" + "="*60)
@@ -629,7 +771,7 @@ if __name__ == "__main__":
         )
     else:
         # 기본 모드: 기존 CSV를 DuckDB로 변환
-        csv_file = "data/merged/merged_influenza_data.csv"
+        csv_file = "merged_influenza_data.csv"
         if Path(csv_file).exists():
             db_path = convert_csv_to_duckdb(
                 csv_path=csv_file,

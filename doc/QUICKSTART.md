@@ -8,10 +8,32 @@
 
 ## 📦 설치
 
-1. **필수 패키지 설치**
+### 1. 가상환경 생성 및 활성화
+
+**macOS/Linux:**
+```bash
+# 가상환경 생성
+python3 -m venv .venv
+
+# 가상환경 활성화
+source .venv/bin/activate
+```
+
+**Windows:**
+```bash
+# 가상환경 생성
+python -m venv .venv
+
+# 가상환경 활성화
+.venv\Scripts\activate
+```
+
+### 2. 필수 패키지 설치
 ```bash
 pip install -r requirements.txt
 ```
+
+> **💡 Tip**: 작업을 마친 후 `deactivate` 명령어로 가상환경을 비활성화할 수 있습니다.
 
 ## 🔄 데이터 업데이트 (신규 추가!)
 

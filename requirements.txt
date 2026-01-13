@@ -17,3 +17,4 @@ duckdb
 
 # 추가 유틸리티
 scipy
+tabulate
