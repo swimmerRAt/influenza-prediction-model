@@ -1,0 +1,13 @@
+{
+  "d_model": 128,
+  "n_heads": 4,
+  "enc_layers": 2,
+  "ff_dim": 384,
+  "dropout": 0.15761423062374388,
+  "lr": 0.0046421992101297205,
+  "weight_decay": 0.000470724943305838,
+  "batch_size": 48,
+  "seq_len": 14,
+  "pred_len": 3,
+  "patch_len": 2
+}

@@ -8,6 +8,9 @@ scikit-learn
 # Deep Learning
 torch
 
+# Hyperparameter Optimization
+optuna
+
 # API 통신
 requests
 python-dotenv

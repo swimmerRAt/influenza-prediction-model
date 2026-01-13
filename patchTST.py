@@ -13,6 +13,16 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 
+# Optuna for hyperparameter optimization
+try:
+    import optuna
+    from optuna.trial import Trial
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+    print("⚠️ Optuna not installed. Hyperparameter optimization disabled.")
+    print("   Install with: pip install optuna")
+
 # DuckDB for efficient data loading
 from database.db_utils import TimeSeriesDB, load_from_duckdb
 
@@ -147,42 +157,111 @@ print(f"🎲 랜덤 시드: {SEED}\n")
 
 
 # =========================
-# Hyperparameters
+# Configuration - 모든 설정을 여기서 관리
 # =========================
-EPOCHS      = 100
-BATCH_SIZE  = 64        # 소규모 시계열에서도 안정적으로 학습되도록 약간 낮춤
-SEQ_LEN     = 12
-PRED_LEN    = 3
-PATCH_LEN   = 4          # ← CNN이 최소 3~5 커널 적용 가능하도록 확대
-STRIDE      = 1
 
-D_MODEL     = 128        # 4의 배수(멀티스케일 분기 4개 합산)
-N_HEADS     = 2
-ENC_LAYERS  = 4
-FF_DIM      = 128
-DROPOUT     = 0.3        # 약간 강화
-HEAD_HIDDEN = [64, 64]
+class Config:
+    """모델 설정 통합 관리"""
+    
+    # ===== Optuna 최적화 설정 =====
+    USE_OPTUNA = True       # Optuna 최적화 실행
+    N_TRIALS = 10          # Optuna 최적화 시도 횟수
+    OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
+    
+    # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
+    OPTUNA_SEARCH_SPACE = {
+        'd_model': [64, 128, 256],  # n_heads의 배수로 설정
+        'n_heads': [2, 4, 8],       # Attention head 개수
+        'enc_layers': (2, 8),       # Encoder 레이어 개수 (범위 확장)
+        'ff_dim': [64, 96, 128, 192, 256, 384, 512],  # Feed-forward 차원 (더 많은 값 추가)
+        'dropout': (0.05, 0.5),                       # Dropout 비율 (범위 확장)
+        'lr': (1e-6, 1e-2),                           # Learning rate (범위 확장, log scale)
+        'weight_decay': (1e-6, 1e-2),                 # Weight decay (범위 확장, log scale)
+        'batch_size': [16, 32, 48, 64, 96, 128],      # Batch size (더 세밀한 값 추가)
+        'seq_len': [8, 10, 12, 14, 16, 18, 20],       # Input sequence length (세밀화)
+        'pred_len': [1, 2, 3, 4, 5],                  # Prediction horizon (세밀화)
+        'patch_len': [2, 3, 4, 5, 6],                 # Patch length (범위 확장)
+    }
+    
+    # ===== 모델 하이퍼파라미터 (기본값) =====
+    # Optuna를 사용하지 않을 때 또는 최적화 후 고정값으로 사용
+    EPOCHS = 100
+    BATCH_SIZE = 64
+    SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
+    PRED_LEN = 3            # 예측 길이 (미래 몇 주)
+    PATCH_LEN = 4           # CNN 패치 길이
+    STRIDE = 1              # 패치 스트라이드
+    
+    # 모델 아키텍처
+    D_MODEL = 128           # 모델 차원 (4의 배수 필수)
+    N_HEADS = 2             # Attention head 개수
+    ENC_LAYERS = 4          # Encoder 레이어 개수
+    FF_DIM = 128            # Feed-forward 차원
+    DROPOUT = 0.3           # Dropout 비율
+    HEAD_HIDDEN = [64, 64]  # Prediction head hidden layers
+    
+    # ===== 학습 설정 =====
+    LR = 5e-4               # Learning rate
+    WEIGHT_DECAY = 5e-4     # Weight decay (L2 regularization)
+    PATIENCE = 60           # Early stopping patience
+    WARMUP_EPOCHS = 30      # Learning rate warmup epochs
+    
+    # ===== 데이터 설정 =====
+    TRAIN_RATIO = 0.7       # Train 데이터 비율
+    VAL_RATIO = 0.15        # Validation 데이터 비율 (Test = 1 - TRAIN - VAL)
+    SCALER_TYPE = "robust"  # Scaler 타입: "standard", "robust", "minmax"
+    
+    # 외생 특징 사용 모드
+    # "auto": 자동 감지, "none": 사용 안함, "vax": 백신률만, 
+    # "resp": 호흡기지수만, "both": 둘 다, "all": 모든 특징
+    USE_EXOG = "all"
+    INCLUDE_SEASONAL_FEATS = True  # week_sin, week_cos 포함 여부
+    
+    # ===== 출력 설정 =====
+    OUT_CSV = str(BASE_DIR / "ili_predictions.csv")
+    PLOT_LAST_WINDOW = str(BASE_DIR / "plot_last_window.png")
+    PLOT_TEST_RECON = str(BASE_DIR / "plot_test_reconstruction.png")
+    PLOT_MA_CURVES = str(BASE_DIR / "plot_ma_curves.png")
+    BEST_PARAMS_JSON = str(BASE_DIR / "best_hyperparameters.json")
+    
+    # ===== 기타 설정 =====
+    RECON_W_START = 2.0     # Overlap 재구성 시작 가중치
+    RECON_W_END = 0.5       # Overlap 재구성 끝 가중치
 
-LR              = 5e-4
-WEIGHT_DECAY    = 5e-4
-PATIENCE        = 60
-WARMUP_EPOCHS   = 30
+# 전역 변수로 설정 (하위 호환성)
+USE_OPTUNA = Config.USE_OPTUNA
+N_TRIALS = Config.N_TRIALS
 
-SCALER_TYPE     = "robust"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
+EPOCHS = Config.EPOCHS
+BATCH_SIZE = Config.BATCH_SIZE
+SEQ_LEN = Config.SEQ_LEN
+PRED_LEN = Config.PRED_LEN
+PATCH_LEN = Config.PATCH_LEN
+STRIDE = Config.STRIDE
 
-# 외생 특징 사용 모드: "auto"|"none"|"vax"|"resp"|"both"
-USE_EXOG        = "all"
+D_MODEL = Config.D_MODEL
+N_HEADS = Config.N_HEADS
+ENC_LAYERS = Config.ENC_LAYERS
+FF_DIM = Config.FF_DIM
+DROPOUT = Config.DROPOUT
+HEAD_HIDDEN = Config.HEAD_HIDDEN
 
-OUT_CSV          = str(BASE_DIR / "ili_predictions.csv")
-PLOT_LAST_WINDOW = str(BASE_DIR / "plot_last_window.png")
-PLOT_TEST_RECON  = str(BASE_DIR / "plot_test_reconstruction.png")
-PLOT_MA_CURVES   = str(BASE_DIR / "plot_ma_curves.png")
+LR = Config.LR
+WEIGHT_DECAY = Config.WEIGHT_DECAY
+PATIENCE = Config.PATIENCE
+WARMUP_EPOCHS = Config.WARMUP_EPOCHS
 
-# overlap 재구성 가중치 (t+1을 조금 더 신뢰)
-RECON_W_START, RECON_W_END = 2.0, 0.5
+SCALER_TYPE = Config.SCALER_TYPE
+USE_EXOG = Config.USE_EXOG
+INCLUDE_SEASONAL_FEATS = Config.INCLUDE_SEASONAL_FEATS
 
-# --- Feature switches ---
-INCLUDE_SEASONAL_FEATS = True   # week_sin, week_cos를 입력 피처에 포함할지
+OUT_CSV = Config.OUT_CSV
+PLOT_LAST_WINDOW = Config.PLOT_LAST_WINDOW
+PLOT_TEST_RECON = Config.PLOT_TEST_RECON
+PLOT_MA_CURVES = Config.PLOT_MA_CURVES
+
+RECON_W_START = Config.RECON_W_START
+RECON_W_END = Config.RECON_W_END
 
 # =========================
 # utils
@@ -312,7 +391,12 @@ def set_seed(seed=42):
 
 
 
-def make_splits(n: int, train_ratio=0.7, val_ratio=0.15):
+def make_splits(n: int, train_ratio=None, val_ratio=None):
+    """데이터 분할 (train/val/test)"""
+    if train_ratio is None:
+        train_ratio = Config.TRAIN_RATIO
+    if val_ratio is None:
+        val_ratio = Config.VAL_RATIO
     n_train = int(n * train_ratio)
     n_val   = int(n * val_ratio)
     return (0, n_train), (n_train, n_train+n_val), (n_train+n_val, n)
@@ -740,10 +824,34 @@ def warmup_lr(ep:int, base_lr:float, warmup_epochs:int):
     return base_lr
 
 def batch_mae_in_original_units(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
-    p = pred_b.detach().cpu().numpy().reshape(-1, 1)
-    t = y_b.detach().cpu().numpy().reshape(-1, 1)
+    """
+    Compute MAE in original units for single-step or multi-step prediction.
+
+    pred_b: (B,) or (B,1) or (B,H)
+    y_b:    (B,H) or (B,)
+    """
+    # move to numpy
+    p = pred_b.detach().cpu().numpy()
+    t = y_b.detach().cpu().numpy()
+
+    # ensure 2D
+    if p.ndim == 1:
+        p = p[:, None]          # (B,1)
+    if t.ndim == 1:
+        t = t[:, None]          # (B,1)
+
+    # if prediction is single-step but target is multi-step, broadcast
+    if p.shape[1] == 1 and t.shape[1] > 1:
+        p = np.repeat(p, t.shape[1], axis=1)
+
+    # flatten to (B*H, 1)
+    p = p.reshape(-1, 1)
+    t = t.reshape(-1, 1)
+
+    # inverse scaling
     p_orig = scaler_y.inverse_transform(p).reshape(-1)
     t_orig = scaler_y.inverse_transform(t).reshape(-1)
+
     return float(np.mean(np.abs(p_orig - t_orig)))
 
 def batch_corrcoef(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
@@ -1074,29 +1182,49 @@ if __name__ == "__main__":
     print(f"   - Data points: {len(y)}")
     print(f"   - Features used ({len(feat_names)}): {feat_names}")
     
-    # 모델 학습 및 평가
-    print("\n" + "* " * 30)
-    print("모델 학습 시작!")
-    print("* " * 30 + "\n")
-    train_and_eval(X, y, labels, feat_names)
+    # 모델 학습 및 평가 (baseline 학습은 삭제됨; Optuna 이후 최종 학습만 실행)
 
     # =========================
 # Feature Importance utils
 # =========================
-def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names, 
-                       seq_len=SEQ_LEN, pred_len=PRED_LEN, patch_len=PATCH_LEN, stride=STRIDE,
+def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
                        batch_size=BATCH_SIZE):
-    """현재 모델로 한 분할(va/test) 세트에서 MAE(원 단위) 계산"""
-    ds = PatchTSTDataset(X_split_sc, y_split_sc, seq_len, pred_len, patch_len, stride)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=False)
+    """
+    Feature Importance용 MAE 계산
+    → 반드시 현재 model.head 출력 차원(pred_len)을 기준으로 계산
+    """
     model.eval()
+
+    # 🔑 실제 모델의 pred_len을 사용
+    pred_len = model.head[-1].out_features
+    seq_len  = SEQ_LEN
+    patch_len = PATCH_LEN
+    stride = STRIDE
+
+    ds = PatchTSTDataset(
+        X_split_sc, y_split_sc,
+        seq_len=seq_len,
+        pred_len=pred_len,
+        patch_len=patch_len,
+        stride=stride
+    )
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False)
+
     mae_sum, n = 0.0, 0
     with torch.no_grad():
         for Xb, yb, _ in dl:
-            Xb = Xb.to(DEVICE); yb = yb.to(DEVICE)
-            pred = model(Xb)  # (B, H)
+            Xb = Xb.to(DEVICE)
+            yb = yb.to(DEVICE)
+
+            pred = model(Xb)  # (B, H_model)
+
+            # 🔒 pred / yb shape mismatch 방지
+            H = pred.shape[1]
+            yb = yb[:, :H]
+
             mae_sum += batch_mae_in_original_units(pred, yb, scaler_y) * yb.size(0)
             n += yb.size(0)
+
     return float(mae_sum / max(1, n))
 
 
@@ -1205,10 +1333,225 @@ def plot_feature_importance(fi_df, out_csv=None, out_png=None):
 
 
 # =========================
+# Optuna Optimization
+# =========================
+def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
+                            n_trials: int = 50):
+    """
+    Optuna를 사용한 하이퍼파라미터 최적화
+    
+    Args:
+        X: 입력 특징 (N, F)
+        y: 타겟 변수 (N,)
+        labels: 시간 라벨
+        feat_names: 특징 이름
+        n_trials: 최적화 시도 횟수
+        
+    Returns:
+        best_params: 최적 하이퍼파라미터 dict
+    """
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna is not installed. Install with: pip install optuna")
+    
+    print("\n" + "=" * 70)
+    print("🔍 Optuna 하이퍼파라미터 최적화 시작")
+    print("=" * 70)
+    
+    def objective(trial: Trial) -> float:
+        """Optuna objective function - validation MAE를 최소화"""
+        
+        # Config에서 탐색 공간 가져오기
+        search_space = Config.OPTUNA_SEARCH_SPACE
+        
+        # 하이퍼파라미터 샘플링
+        params = {
+            'd_model': trial.suggest_categorical('d_model', search_space['d_model']),
+            'n_heads': trial.suggest_categorical('n_heads', search_space['n_heads']),
+            'enc_layers': trial.suggest_int('enc_layers', *search_space['enc_layers']),
+            'ff_dim': trial.suggest_categorical('ff_dim', search_space['ff_dim']),
+            'dropout': trial.suggest_float('dropout', *search_space['dropout']),
+            'lr': trial.suggest_float('lr', *search_space['lr'], log=True),
+            'weight_decay': trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True),
+            'batch_size': trial.suggest_categorical('batch_size', search_space['batch_size']),
+            'seq_len': trial.suggest_categorical('seq_len', search_space['seq_len']),
+            'pred_len': trial.suggest_categorical('pred_len', search_space['pred_len']),
+            'patch_len': trial.suggest_categorical('patch_len', search_space['patch_len']),
+        }
+        
+        # d_model은 4의 배수여야 함 (MultiScaleCNN 분기 4개)
+        if params['d_model'] % 4 != 0:
+            params['d_model'] = (params['d_model'] // 4) * 4
+        
+        # n_heads는 d_model의 약수여야 함
+        while params['d_model'] % params['n_heads'] != 0:
+            params['n_heads'] //= 2
+            if params['n_heads'] < 1:
+                params['n_heads'] = 1
+                break
+        
+        # 데이터 분할
+        (s0, e0), (s1, e1), (s2, e2) = make_splits(len(y))
+        X_tr, X_va = X[s0:e0], X[s1:e1]
+        y_tr, y_va = y[s0:e0], y[s1:e1]
+        
+        # Scaling
+        scaler_y = get_scaler()
+        y_tr_sc = scaler_y.fit_transform(y_tr.reshape(-1,1)).ravel()
+        y_va_sc = scaler_y.transform(y_va.reshape(-1,1)).ravel()
+        
+        scaler_x = get_scaler()
+        X_tr_sc = scaler_x.fit_transform(X_tr)
+        X_va_sc = scaler_x.transform(X_va)
+        
+        F = X.shape[1]
+        
+        # Dataset 생성
+        try:
+            ds_tr = PatchTSTDataset(X_tr_sc, y_tr_sc, params['seq_len'], params['pred_len'], 
+                                   params['patch_len'], STRIDE)
+            ds_va = PatchTSTDataset(X_va_sc, y_va_sc, params['seq_len'], params['pred_len'],
+                                   params['patch_len'], STRIDE)
+        except:
+            # 데이터가 부족한 경우
+            return float('inf')
+        
+        if len(ds_tr) < 1 or len(ds_va) < 1:
+            return float('inf')
+        
+        dl_tr = DataLoader(ds_tr, batch_size=params['batch_size'], shuffle=True, drop_last=False)
+        dl_va = DataLoader(ds_va, batch_size=params['batch_size'], shuffle=False)
+        
+        # 모델 생성
+        model = PatchTSTModel(
+            in_features=F, patch_len=params['patch_len'], d_model=params['d_model'],
+            n_heads=params['n_heads'], n_layers=params['enc_layers'], ff_dim=params['ff_dim'],
+            dropout=params['dropout'], pred_len=params['pred_len'], head_hidden=HEAD_HIDDEN
+        ).to(DEVICE)
+        
+        crit = nn.HuberLoss(delta=1.0)
+        opt = torch.optim.AdamW(model.parameters(), lr=params['lr'], weight_decay=params['weight_decay'])
+        
+        # Early stopping을 위한 변수
+        best_val_loss = float('inf')
+        patience_count = 0
+        early_stop_patience = 20  # Optuna에서는 더 짧게
+        
+        # 학습 (Optuna에서는 적은 에포크)
+        max_epochs = 50
+        for ep in range(1, max_epochs + 1):
+            # Train
+            model.train()
+            tr_loss_sum = 0
+            n = 0
+            for Xb, yb, _ in dl_tr:
+                Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
+                opt.zero_grad()
+                pred = model(Xb)
+                loss = crit(pred, yb)
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+                bs = yb.size(0)
+                tr_loss_sum += loss.item() * bs
+                n += bs
+            
+            tr_loss = tr_loss_sum / max(1, n)
+            
+            # Validation
+            model.eval()
+            va_loss_sum = 0
+            va_mae_sum = 0
+            n = 0
+            with torch.no_grad():
+                for Xb, yb, _ in dl_va:
+                    Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
+                    pred = model(Xb)
+                    loss = crit(pred, yb)
+                    bs = yb.size(0)
+                    va_loss_sum += loss.item() * bs
+                    va_mae_sum += batch_mae_in_original_units(pred, yb, scaler_y) * bs
+                    n += bs
+            
+            va_loss = va_loss_sum / max(1, n)
+            va_mae = va_mae_sum / max(1, n)
+            
+            # Early stopping
+            if va_loss < best_val_loss:
+                best_val_loss = va_loss
+                patience_count = 0
+            else:
+                patience_count += 1
+                if patience_count >= early_stop_patience:
+                    break
+            
+            # Optuna pruning (중간 결과가 나쁘면 조기 종료)
+            trial.report(va_mae, ep)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+        
+        # Validation MAE 반환
+        return va_mae
+    
+    # Optuna study 생성 및 실행
+    study = optuna.create_study(
+        direction='minimize',
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=10)
+    )
+    
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    
+    # 결과 출력
+    print("\n" + "=" * 70)
+    print("✅ Optuna 최적화 완료")
+    print("=" *  70)
+    print(f"\n🏆 Best Trial:")
+    print(f"  - Value (Val MAE): {study.best_trial.value:.4f}")
+    print(f"\n📊 Best Hyperparameters:")
+    for key, value in study.best_params.items():
+        print(f"  - {key}: {value}")
+    
+    # Best parameters 저장
+    best_params_file = BASE_DIR / "best_hyperparameters.json"
+    import json
+    with open(best_params_file, 'w') as f:
+        json.dump(study.best_params, f, indent=2)
+    print(f"\n💾 Best parameters saved to: {best_params_file}")
+    
+    return study.best_params
+
+# =========================
 # train_and_eval (main)
 # =========================
 def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
-                   compute_fi=False, save_fi=False):
+                   compute_fi=False, save_fi=False, optuna_params=None):
+    """
+    통합 학습 + 평가 함수.
+    compute_fi=True -> feature importance 계산
+    save_fi=True -> CSV/plot 저장
+    optuna_params=dict -> Optuna 최적화된 파라미터 사용
+    """
+    # Optuna 파라미터가 있으면 적용
+    if optuna_params:
+        global D_MODEL, N_HEADS, ENC_LAYERS, FF_DIM, DROPOUT, LR, WEIGHT_DECAY, BATCH_SIZE, SEQ_LEN, PRED_LEN, PATCH_LEN
+        D_MODEL = optuna_params.get('d_model', D_MODEL)
+        N_HEADS = optuna_params.get('n_heads', N_HEADS)
+        ENC_LAYERS = optuna_params.get('enc_layers', ENC_LAYERS)
+        FF_DIM = optuna_params.get('ff_dim', FF_DIM)
+        DROPOUT = optuna_params.get('dropout', DROPOUT)
+        LR = optuna_params.get('lr', LR)
+        WEIGHT_DECAY = optuna_params.get('weight_decay', WEIGHT_DECAY)
+        BATCH_SIZE = optuna_params.get('batch_size', BATCH_SIZE)
+        SEQ_LEN = optuna_params.get('seq_len', SEQ_LEN)
+        PRED_LEN = optuna_params.get('pred_len', PRED_LEN)
+        PATCH_LEN = optuna_params.get('patch_len', PATCH_LEN)
+        
+        print("\n" + "=" * 70)
+        print("🎯 Optuna 최적 파라미터로 최종 학습")
+        print("=" * 70)
+        for key, value in optuna_params.items():
+            print(f"  - {key}: {value}")
+        print("=" * 70 + "\n")
+    
     """
     통합 학습 + 평가 함수.
     compute_fi=True -> feature importance 계산
@@ -1383,27 +1726,84 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         print(f"Last window plot saved to {PLOT_LAST_WINDOW}")
         plt.close()  # 창을 닫아 메모리 절약
 
-    # Test reconstruction
-    all_p_te = []
-    model.eval()
-    with torch.no_grad():
-        for Xb,_,_ in dl_te:
-            Xb=Xb.to(DEVICE)
-            p_b=model(Xb).cpu().numpy()
-            all_p_te.append(p_b)
-    all_p_te = np.concatenate(all_p_te, axis=0)
-    pred_orig = scaler_y.inverse_transform(all_p_te).ravel()
-    y_te_orig = scaler_y.inverse_transform(y_te_sc.reshape(-1,1)).ravel()
+    # =========================
+    # Plot: Test Range (Overlap-Avg, Weighted)
+    # =========================
+    context = y_va_sc[-SEQ_LEN:]                       # validation context
+    y_ct_sc = np.concatenate([context, y_te_sc])       # context + test
+    X_ct_sc = np.concatenate([X_va_sc[-SEQ_LEN:], X_te_sc], axis=0)
 
-    plt.figure(figsize=(12,5))
-    plt.plot(y_te_orig, label="True", alpha=0.7)
-    plt.plot(pred_orig[:len(y_te_orig)], label="Pred", alpha=0.7)
-    plt.xlabel("Test set index"); plt.ylabel("ILI")
-    plt.title("Test set reconstruction (multi-step predictions)")
-    plt.legend(); plt.grid(True, alpha=0.3)
-    plt.savefig(PLOT_TEST_RECON, dpi=150)
-    print(f"Test reconstruction plot saved to {PLOT_TEST_RECON}")
-    plt.close()  # 창을 닫아 메모리 절약
+    ds_ct = PatchTSTDataset(X_ct_sc, y_ct_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
+    dl_ct = DataLoader(ds_ct, batch_size=BATCH_SIZE, shuffle=False)
+
+    model.eval()
+    preds_ct, starts_ct = [], []
+    with torch.no_grad():
+        for Xb, _, i0 in dl_ct:
+            Xb = Xb.to(DEVICE)
+            preds_ct.append(model(Xb).cpu().numpy())
+            starts_ct.append(i0.numpy())
+
+    preds_ct = np.concatenate(preds_ct, axis=0)    # (N,H)
+    starts_ct = np.concatenate(starts_ct, axis=0)
+
+    preds_ct_orig = scaler_y.inverse_transform(
+        preds_ct.reshape(-1,1)
+    ).reshape(-1, PRED_LEN)
+
+    test_len = len(y_te)
+    recon_sum = np.zeros(test_len)
+    recon_cnt = np.zeros(test_len)
+
+    # horizon weights (early step emphasized)
+    h_weights = np.linspace(RECON_W_START, RECON_W_END, PRED_LEN)
+
+    for k, s in enumerate(starts_ct):
+        base = int(s) + SEQ_LEN - SEQ_LEN
+        for h in range(PRED_LEN):
+            idx = base + h
+            if 0 <= idx < test_len:
+                recon_sum[idx] += preds_ct_orig[k, h] * h_weights[h]
+                recon_cnt[idx] += h_weights[h]
+
+    recon = np.where(recon_cnt > 0, recon_sum / recon_cnt, np.nan)
+
+    truth = y_te
+    labels_te = labels[len(y) - len(y_te):]
+
+    valid = ~np.isnan(recon)
+    recon = recon[valid]
+    truth = truth[valid]
+    labels_te = [labels_te[i] for i in np.where(valid)[0]]
+
+    plt.figure(figsize=(18,6))
+    plt.plot(truth, linewidth=2.5, marker='o', markersize=3,
+             label=f"Truth (test segment, n={len(truth)})", color="navy")
+    plt.plot(recon, linewidth=2.5, marker='s', markersize=3,
+             label="Prediction (overlap-avg, weighted)", color="darkorange")
+
+    plt.title(
+        f"Test Range: Truth vs Prediction | {labels_te[0]} ~ {labels_te[-1]}",
+        fontsize=14, fontweight="bold"
+    )
+    plt.xlabel("Season - Week", fontsize=12)
+    plt.ylabel("ILI per 1,000 Population", fontsize=12)
+
+    tick_step = max(1, len(labels_te) // 20)
+    tick_idx = list(range(0, len(labels_te), tick_step))
+    if tick_idx[-1] != len(labels_te)-1:
+        tick_idx.append(len(labels_te)-1)
+
+    plt.xticks(tick_idx, [labels_te[i] for i in tick_idx],
+               rotation=45, ha="right", fontsize=9)
+
+    plt.grid(True, alpha=0.3, linestyle="--")
+    plt.legend(loc="upper left", fontsize=11)
+    plt.tight_layout()
+
+    plt.savefig(PLOT_TEST_RECON, dpi=300, bbox_inches="tight")
+    print(f"Saved plot -> {PLOT_TEST_RECON}")
+    plt.close()
 
     # Feature importance
     fi_df = None
@@ -1430,10 +1830,23 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
 # 실행부 (결과 출력)
 # =========================
 if __name__ == "__main__":
+    best_params = None
+    
+    # Optuna 최적화 실행
+    if USE_OPTUNA:
+        if not OPTUNA_AVAILABLE:
+            print("\n⚠️ Optuna가 설치되지 않았습니다.")
+            print("   설치 명령: pip install optuna")
+            print("   기본 하이퍼파라미터로 학습을 진행합니다.\n")
+        else:
+            best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+    
+    # 최종 학습 실행
     model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
         X, y, labels, feat_names,
         compute_fi=True,
-        save_fi=True
+        save_fi=True,
+        optuna_params=best_params
     )
 
     print("\n=== [결과 요약] ===")
