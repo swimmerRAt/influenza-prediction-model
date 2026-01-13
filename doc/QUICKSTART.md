@@ -64,7 +64,9 @@ python db_utils.py
 
 ## 🎯 사용 방법
 
-### patchTST.py로 모델 학습
+### PatchTST 모델 학습 (DuckDB 통합)
+
+**1단계: 환경 설정 확인**
 
 `.env` 파일 수정:
 ```env
@@ -72,10 +74,46 @@ USE_API=false
 USE_DUCKDB=true
 ```
 
-그 다음 모델 실행:
+**2단계: 모델 실행**
+
 ```bash
 python patchTST.py
 ```
+
+**자동 처리 과정:**
+1. ✅ DuckDB에서 4,983행 데이터 자동 로드
+2. ✅ 19-49세 연령대 자동 선택 (가장 일반적)
+3. ✅ 한국어 컬럼 → 영어 컬럼 자동 매핑
+   - `연도` → `year`, `주차` → `week`
+   - `의사환자 분율` → `ili` (타겟 변수)
+   - `예방접종률` → `vaccine_rate`
+   - `입원환자 수` → `hospitalization`/`respiratory_index`
+   - `인플루엔자 검출률` → `detection_rate`
+4. ✅ 예방접종률 데이터 없는 연령대는 전체 평균 사용
+5. ✅ 결측치 자동 보간 (선형 보간 + median)
+6. ✅ 주기성 특징 자동 추가 (`week_sin`, `week_cos`)
+7. ✅ PatchTST 모델 학습 (100 에포크)
+8. ✅ 예측 결과 및 그래프 자동 저장
+9. ✅ Feature Importance 계산 및 저장
+10. ✅ **학습 완료 후 자동 종료** (수동 종료 불필요)
+
+**출력 파일:**
+```
+output/
+├── ili_predictions.csv           # 예측 결과
+├── plot_ma_curves.png            # MAE/Loss 곡선
+├── plot_last_window.png          # 마지막 윈도우 예측
+├── plot_test_reconstruction.png  # 테스트 재구성
+├── feature_importance.csv        # Feature Importance 데이터
+└── feature_importance.png        # Feature Importance 그래프
+```
+
+**완료 확인:**
+- 마지막 로그에 "Feature Importance saved to ..." 출력 → 정상 완료
+- 프로그램이 자동으로 종료되며 터미널 프롬프트 복귀
+
+> **⚠️ 참고**: 이전 버전에서는 `plt.show()` 때문에 수동 종료(Ctrl+C)가 필요했으나, 
+> 현재 버전은 `plt.close()`로 변경되어 **자동으로 종료**됩니다.
 
 ### Python 코드에서 직접 사용
 

@@ -334,43 +334,130 @@ def _norm_season_text(s: str) -> str:
 # =========================
 def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarray, np.ndarray, list, list]:
     """
+    DuckDB 또는 CSV 데이터를 PatchTST 모델 학습용으로 전처리
+    
     Returns:
-        X: (N, F) features (first column should be 'ili' to align with univariate fallback)
-        y: (N,) target (ili)
+        X: (N, F) features (first column should be target variable)
+        y: (N,) target (의사환자 분율)
         labels: list[str] for plotting ticks
         used_feat_names: list[str] feature column names (len=F)
     
     Parameters:
-        df: API에서 가져온 DataFrame
+        df: DuckDB 또는 API에서 가져온 DataFrame
         use_exog: 외생변수 사용 모드
     """
     if df is None:
-        raise ValueError("df는 반드시 제공되어야 합니다. API를 통해 데이터를 먼저 로드하세요.")
+        raise ValueError("df는 반드시 제공되어야 합니다. 먼저 데이터를 로드하세요.")
     
     df = df.copy()
-    df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
-    # 정렬
-# 정렬: 주→일 변환 후에는 date 기준으로만 정렬
+    
+    print(f"\n📊 원본 데이터 구조:")
+    print(f"   - Shape: {df.shape}")
+    print(f"   - Columns: {list(df.columns)}")
+    
+    # ===== DuckDB 데이터 형식 감지 및 처리 =====
+    is_duckdb_format = all(col in df.columns for col in ['연도', '주차', '연령대'])
+    
+    if is_duckdb_format:
+        print(f"\n🔍 DuckDB 데이터 형식 감지됨 - 연령대별 데이터 처리 중...")
+        
+        # 연령대별 데이터 확인
+        age_groups = df['연령대'].unique()
+        print(f"   - 고유 연령대: {len(age_groups)}개")
+        print(f"   - 연령대 목록: {sorted(age_groups)[:5]}...")
+        
+        # 여러 연령대 중 데이터가 가장 풍부한 연령대 선택
+        # 우선순위: 19-49세 (가장 일반적) > 65세이상 > 65세 이상 > 전체 평균
+        candidate_age_groups = ['19-49세', '65세이상', '65세 이상', '0-6세']
+        target_age_group = None
+        
+        for candidate in candidate_age_groups:
+            if candidate in age_groups:
+                # 해당 연령대의 데이터 품질 확인
+                temp_df = df[df['연령대'] == candidate].copy()
+                valid_ili = temp_df['의사환자 분율'].notna().sum()
+                if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
+                    target_age_group = candidate
+                    break
+        
+        if target_age_group and target_age_group in age_groups:
+            print(f"   - '{target_age_group}' 연령대 데이터 사용")
+            df_age = df[df['연령대'] == target_age_group].copy()
+            
+            # 예방접종률이 모두 NaN인 경우 전체 평균으로 채우기
+            if df_age['예방접종률'].notna().sum() == 0:
+                print(f"   - '{target_age_group}' 연령대에 예방접종률 데이터 없음 - 전체 평균 사용")
+                # 연도/주차별로 전체 연령대의 예방접종률 평균 계산
+                vaccine_avg = df.groupby(['연도', '주차'], as_index=False)['예방접종률'].mean()
+                vaccine_avg = vaccine_avg.rename(columns={'예방접종률': '예방접종률_전체평균'})
+                df_age = df_age.merge(vaccine_avg, on=['연도', '주차'], how='left')
+                df_age['예방접종률'] = df_age['예방접종률_전체평균']
+                df_age = df_age.drop(columns=['예방접종률_전체평균'])
+            
+            df = df_age
+        else:
+            # 적절한 단일 연령대가 없으면 연도/주차별 평균 사용
+            print(f"   - 연도/주차별 전체 연령대 평균 사용")
+            numeric_cols = ['의사환자 분율', '입원환자 수', '인플루엔자 검출률', '예방접종률', '응급실 인플루엔자 환자']
+            agg_dict = {col: 'mean' for col in numeric_cols if col in df.columns}
+            agg_dict['아형'] = 'first'  # 아형은 첫 값 사용
+            
+            df = df.groupby(['연도', '주차'], as_index=False).agg(agg_dict)
+        
+        # 컬럼명 매핑 (DuckDB -> 기존 형식)
+        column_mapping = {
+            '연도': 'year',
+            '주차': 'week',
+            '의사환자 분율': 'ili',
+            '예방접종률': 'vaccine_rate',
+            '입원환자 수': 'hospitalization',
+            '인플루엔자 검출률': 'detection_rate',
+            '응급실 인플루엔자 환자': 'emergency_patients'
+        }
+        
+        df = df.rename(columns=column_mapping)
+        
+        # 정렬
+        df = df.sort_values(['year', 'week']).reset_index(drop=True)
+        
+        # season_norm 생성 (week 36 이상은 현재 연도 시즌, 미만은 다음 연도 시즌)
+        df['season_norm'] = df.apply(
+            lambda row: f"{int(row['year'])}-{int(row['year'])+1}" if row['week'] >= 36 
+                       else f"{int(row['year'])-1}-{int(row['year'])}",
+            axis=1
+        )
+        
+        print(f"\n✅ DuckDB 데이터 변환 완료:")
+        print(f"   - 변환 후 Shape: {df.shape}")
+        print(f"   - 연도 범위: {df['year'].min():.0f} ~ {df['year'].max():.0f}")
+        print(f"   - 주차 범위: {df['week'].min():.0f} ~ {df['week'].max():.0f}")
+        print(f"   - 데이터 포인트 수: {len(df)}")
+    
+    # ===== 기존 처리 로직 =====
+    # 주 단위 -> 일 단위 보간 (선택사항)
+    # df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
+    
+    # 정렬 확인
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values("date").reset_index(drop=True)
-    else:
-        # (극히 드문 fallback) date가 없을 때만 기존 로직
-        if {"season_norm", "week"}.issubset(df.columns):
-            df["season_norm"] = df["season_norm"].astype(str).map(_norm_season_text)
-            df["week"] = pd.to_numeric(df["week"], errors="coerce")
-            df = df.sort_values(["season_norm", "week"]).copy()
-        elif "label" in df.columns:
-            df = df.sort_values(["label"]).copy()
+    elif {"season_norm", "week"}.issubset(df.columns):
+        df["season_norm"] = df["season_norm"].astype(str).map(_norm_season_text)
+        df["week"] = pd.to_numeric(df["week"], errors="coerce")
+        df = df.sort_values(["season_norm", "week"]).reset_index(drop=True)
+    elif "label" in df.columns:
+        df = df.sort_values(["label"]).reset_index(drop=True)
 
-    # 타깃
+    # 타깃 변수 확인
     if "ili" not in df.columns:
-        raise ValueError("CSV에 'ili' 컬럼이 없습니다.")
+        raise ValueError("데이터에 'ili' (의사환자 분율) 컬럼이 없습니다.")
+    
     df["ili"] = pd.to_numeric(df["ili"], errors="coerce")
     if df["ili"].isna().any():
+        print(f"   ⚠️ 'ili' 컬럼에 결측치 {df['ili'].isna().sum()}개 발견 - 보간 처리")
         df["ili"] = df["ili"].interpolate(method="linear", limit_direction="both").fillna(df["ili"].median())
     
-    # --- ✅ Seasonality feature 추가 ---
+    # --- Seasonality feature 추가 ---
     if "week" in df.columns:
         df["week_sin"] = np.sin(2 * np.pi * df["week"] / 52.0)
         df["week_cos"] = np.cos(2 * np.pi * df["week"] / 52.0)
@@ -378,7 +465,9 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         df["week_sin"] = 0.0
         df["week_cos"] = 0.0
 
-    # --- ✅ Alias 매핑 ---
+    # --- Alias 매핑 ---
+    if "hospitalization" in df.columns and "respiratory_index" not in df.columns:
+        df["respiratory_index"] = df["hospitalization"]
     if "case_count" in df.columns and "respiratory_index" not in df.columns:
         df["respiratory_index"] = df["case_count"]
 
@@ -387,44 +476,63 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     if "wx_week_avg_temp" in df.columns:     climate_feats.append("wx_week_avg_temp")
     if "wx_week_avg_rain" in df.columns:     climate_feats.append("wx_week_avg_rain")
     if "wx_week_avg_humidity" in df.columns: climate_feats.append("wx_week_avg_humidity")
+    if "detection_rate" in df.columns:       climate_feats.append("detection_rate")  # DuckDB 특성
 
     # 외생 후보 존재 여부
     has_vax  = "vaccine_rate" in df.columns
-    has_resp = "respiratory_index" in df.columns
+    has_resp = "respiratory_index" in df.columns or "hospitalization" in df.columns
 
     # 어떤 특징을 쓸지 결정
     mode = use_exog.lower()
     if mode == "auto":
         chosen = ["ili"]
         if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
+        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
+        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
         chosen += climate_feats
     elif mode == "none":
         chosen = ["ili"]
     elif mode == "vax":
         chosen = ["ili"] + (["vaccine_rate"] if has_vax else [])
     elif mode == "resp":
-        chosen = ["ili"] + (["respiratory_index"] if has_resp else [])
+        chosen = ["ili"]
+        if has_resp and "respiratory_index" in df.columns: 
+            chosen.append("respiratory_index")
+        elif has_resp and "hospitalization" in df.columns: 
+            chosen.append("hospitalization")
     elif mode == "both":
         chosen = ["ili"]
         if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
+        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
+        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
         chosen += climate_feats
     elif mode == "climate":
         chosen = ["ili"] + climate_feats
     elif mode == "all":
         chosen = ["ili"]
         if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
+        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
+        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
         chosen += climate_feats
     else:
         raise ValueError(f"Unknown USE_EXOG mode: {use_exog}")
 
     # 숫자화 & 보간
     for c in chosen:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-        if df[c].isna().any():
-            df[c] = df[c].interpolate(method="linear", limit_direction="both").fillna(df[c].median())
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+            if df[c].isna().any():
+                # 선형 보간 후 median으로 남은 결측치 채우기
+                df[c] = df[c].interpolate(method="linear", limit_direction="both")
+                # 여전히 NaN이 있으면 median 사용 (median도 NaN이면 0 사용)
+                median_val = df[c].median()
+                if pd.isna(median_val):
+                    median_val = 0.0
+                df[c] = df[c].fillna(median_val)
+        else:
+            # 컬럼이 없으면 0으로 채움
+            print(f"   ⚠️ 컬럼 '{c}'가 없습니다. 0으로 채웁니다.")
+            df[c] = 0.0
 
     # 라벨
     if "label" in df.columns and df["label"].notna().any():
@@ -439,12 +547,18 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     if INCLUDE_SEASONAL_FEATS and {"week_sin", "week_cos"}.issubset(df.columns):
         feat_names += ["week_sin", "week_cos"]
 
-    # 선택된 입력 피처 로그 찍기
-    print("[Data] Exogenous detected -> vaccine_rate:", has_vax, "| respiratory_index:", has_resp, "| climate_feats:", climate_feats)
-    print("[Data] Selected feature columns (order) ->", feat_names)
+    # 선택된 입력 피처 로그
+    print(f"\n[Data] Exogenous detected -> vaccine_rate: {has_vax} | respiratory/hospitalization: {has_resp} | climate_feats: {climate_feats}")
+    print(f"[Data] Selected feature columns (order) -> {feat_names}")
 
     X = df[feat_names].to_numpy(dtype=float)
     y = df["ili"].to_numpy(dtype=float)
+    
+    print(f"\n✅ 최종 데이터 준비 완료:")
+    print(f"   - X shape: {X.shape}")
+    print(f"   - y shape: {y.shape}")
+    print(f"   - Features: {len(feat_names)}")
+    
     return X, y, labels, feat_names
 
 # =========================
@@ -916,9 +1030,9 @@ if __name__ == "__main__":
     print(f"   - Features used ({len(feat_names)}): {feat_names}")
     
     # 모델 학습 및 평가
-    print("\n" + "🎯 " * 30)
+    print("\n" + "* " * 30)
     print("모델 학습 시작!")
-    print("🎯 " * 30 + "\n")
+    print("* " * 30 + "\n")
     train_and_eval(X, y, labels, feat_names)
 
     # =========================
@@ -1191,15 +1305,27 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     plt.tight_layout()
     plt.savefig(PLOT_MA_CURVES, dpi=150)
     print(f"MAE/loss curves saved to {PLOT_MA_CURVES}")
-    plt.show()
+    plt.close()  # 창을 닫아 메모리 절약
 
     # Last window
-    last_seq_idx = len(y_te_sc) - SEQ_LEN
-    if last_seq_idx>=0:
-        seq = X_te_sc[last_seq_idx:last_seq_idx+SEQ_LEN]
-        seq_t = torch.from_numpy(seq).unsqueeze(0).float().to(DEVICE)
+    last_seq_idx = len(y_te_sc) - SEQ_LEN - PRED_LEN
+    if last_seq_idx >= 0:
+        seq_X = X_te_sc[last_seq_idx:last_seq_idx+SEQ_LEN]  # (SEQ_LEN, F)
+        
+        # Patchify: Dataset의 __getitem__과 동일한 로직
+        patches = []
+        pos = 0
+        while pos + PATCH_LEN <= SEQ_LEN:
+            patches.append(seq_X[pos:pos+PATCH_LEN, :])  # (PATCH_LEN, F)
+            pos += STRIDE
+        X_patch = np.stack(patches, axis=0)  # (P, PATCH_LEN, F)
+        
+        # Tensor로 변환하고 batch 차원 추가
+        seq_t = torch.from_numpy(X_patch).unsqueeze(0).float().to(DEVICE)  # (1, P, PATCH_LEN, F)
+        
+        model.eval()
         with torch.no_grad():
-            p=model(seq_t).cpu().numpy().ravel()
+            p = model(seq_t).cpu().numpy().ravel()
         p_orig = scaler_y.inverse_transform(p.reshape(-1,1)).ravel()
         y_true_last = scaler_y.inverse_transform(y_te_sc[last_seq_idx+SEQ_LEN:last_seq_idx+SEQ_LEN+PRED_LEN].reshape(-1,1)).ravel()
         plt.figure(figsize=(8,4))
@@ -1210,7 +1336,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         plt.legend(); plt.grid(True, alpha=0.3)
         plt.savefig(PLOT_LAST_WINDOW, dpi=150)
         print(f"Last window plot saved to {PLOT_LAST_WINDOW}")
-        plt.show()
+        plt.close()  # 창을 닫아 메모리 절약
 
     # Test reconstruction
     all_p_te = []
@@ -1232,7 +1358,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     plt.legend(); plt.grid(True, alpha=0.3)
     plt.savefig(PLOT_TEST_RECON, dpi=150)
     print(f"Test reconstruction plot saved to {PLOT_TEST_RECON}")
-    plt.show()
+    plt.close()  # 창을 닫아 메모리 절약
 
     # Feature importance
     fi_df = None
@@ -1272,5 +1398,3 @@ if __name__ == "__main__":
         print(fi_df.head(10).to_string(index=False))
     else:
         print("Feature Importance 계산이 수행되지 않았습니다.")
-
-        
