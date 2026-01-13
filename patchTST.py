@@ -384,6 +384,13 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
             print(f"   - '{target_age_group}' 연령대 데이터 사용")
             df_age = df[df['연령대'] == target_age_group].copy()
             
+            # ⭐ 의사환자 분율이 NaN인 행 제거 (필수!)
+            before_count = len(df_age)
+            df_age = df_age[df_age['의사환자 분율'].notna()].copy()
+            after_count = len(df_age)
+            if before_count > after_count:
+                print(f"   - 의사환자 분율 NaN 행 제거: {before_count - after_count}개 제거됨")
+            
             # 예방접종률이 모두 NaN인 경우 전체 평균으로 채우기
             if df_age['예방접종률'].notna().sum() == 0:
                 print(f"   - '{target_age_group}' 연령대에 예방접종률 데이터 없음 - 전체 평균 사용")
@@ -919,7 +926,8 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     plt.xlabel("Horizon (weeks ahead)")
     plt.ylabel("ILI per 1,000 Population")
     plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_LAST_WINDOW, dpi=150)
+    plt.tight_layout()
+    plt.savefig(PLOT_LAST_WINDOW, dpi=300, facecolor='white', edgecolor='none', bbox_inches='tight', format='png', pad_inches=0.1)
     print(f"Saved plot -> {PLOT_LAST_WINDOW}")
 
     # =========================
@@ -961,20 +969,56 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
 
     truth_test = y_te
     x_labels = lab_te
-    tick_step = max(1, test_len // 12)
+    
+    # 유효한 데이터만 사용 (NaN 제거)
+    valid_mask = ~np.isnan(truth_test) & ~np.isnan(recon)
+    valid_indices = np.where(valid_mask)[0]
+    
+    if len(valid_indices) < len(truth_test):
+        print(f"\n⚠️ Warning: {len(truth_test) - len(valid_indices)} NaN values removed from test reconstruction")
+        truth_test = truth_test[valid_mask]
+        recon = recon[valid_mask]
+        x_labels = [x_labels[i] for i in valid_indices]
+    
+    test_len = len(truth_test)
+    
+    # 디버그: 테스트 데이터 범위 출력
+    print(f"\n=== Test Segment Info ===")
+    print(f"Test length: {test_len}")
+    print(f"First label: {x_labels[0]}")
+    print(f"Last label: {x_labels[-1]}")
+    print(f"Truth range: [{truth_test.min():.2f}, {truth_test.max():.2f}]")
+    print(f"Truth mean: {truth_test.mean():.2f}")
+    print(f"Prediction range: [{np.nanmin(recon):.2f}, {np.nanmax(recon):.2f}]")
+    print(f"Prediction mean: {np.nanmean(recon):.2f}")
+    
+    # X축 라벨을 더 자주 표시 (간격 조정)
+    tick_step = max(1, test_len // 20)  # 약 20개 라벨 표시
     tick_idx  = list(range(0, test_len, tick_step))
     if tick_idx[-1] != test_len-1:
         tick_idx.append(test_len-1)
     tick_text = [x_labels[i] for i in tick_idx]
 
-    plt.figure(figsize=(12,5))
-    plt.plot(range(test_len), truth_test, linewidth=2, label="Truth (test segment)")
-    plt.plot(range(test_len), recon,      linewidth=2, label="Prediction (overlap-avg, weighted)")
-    plt.title("Test Range: Truth vs Overlap-averaged Prediction (with context)")
-    plt.xlabel("Season - Week"); plt.ylabel("ILI per 1,000 Population")
-    plt.xticks(tick_idx, tick_text, rotation=45, ha="right")
-    plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_TEST_RECON, dpi=150)
+    plt.figure(figsize=(18,6))  # 그래프 크기 확대
+    plt.plot(range(test_len), truth_test, linewidth=2.5, marker='o', markersize=3, 
+             label=f"Truth (test segment, n={test_len})", color='darkblue')
+    plt.plot(range(test_len), recon, linewidth=2.5, marker='s', markersize=3,
+             label="Prediction (overlap-avg, weighted)", color='darkorange')
+    plt.title(f"Test Range: Truth vs Prediction | {x_labels[0]} ~ {x_labels[-1]}", 
+              fontsize=14, fontweight='bold')
+    plt.xlabel("Season - Week", fontsize=12)
+    plt.ylabel("ILI per 1,000 Population", fontsize=12)
+    plt.xticks(tick_idx, tick_text, rotation=45, ha="right", fontsize=9)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.legend(fontsize=11, loc='upper left')
+    
+    # Y축 범위 명시적 설정 (이상값 방지)
+    y_min = min(truth_test.min(), np.nanmin(recon))
+    y_max = max(truth_test.max(), np.nanmax(recon))
+    plt.ylim(y_min * 0.95, y_max * 1.05)
+    
+    plt.tight_layout()
+    plt.savefig(PLOT_TEST_RECON, dpi=300, facecolor='white', edgecolor='none', bbox_inches='tight', format='png', pad_inches=0.1)
     print(f"Saved plot -> {PLOT_TEST_RECON}")
 
     # =========================
@@ -988,7 +1032,8 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     plt.xlabel("Epoch")
     plt.ylabel("MAE (ILI per 1,000)")
     plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_MA_CURVES, dpi=150)
+    plt.tight_layout()
+    plt.savefig(PLOT_MA_CURVES, dpi=300, facecolor='white', edgecolor='none', bbox_inches='tight', format='png', pad_inches=0.1)
     print(f"Saved plot -> {PLOT_MA_CURVES}")
 
 
