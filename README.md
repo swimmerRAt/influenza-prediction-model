@@ -4,7 +4,14 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.4.3-yellow.svg)](https://duckdb.org/)
 
+
 시계열 데이터 기반의 인플루엔자(ILI) 발생률 예측을 위한 PatchTST 딥러닝 모델입니다. DuckDB를 활용한 효율적인 대용량 데이터 관리와 Transformer 기반 예측 모델을 결합했습니다.
+
+**최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 반영
+**실행:** python patchTST.py (서버 실행 불필요, 자동 종료)
+**출력:** 예측 결과, 피처 중요도, 시각화 등 주요 파일 자동 생성/재생성
+**주기성 피처:** week_sin, week_cos 자동 생성 및 활용
+**주요 로그:** Best Val MAE, Test MAE 등 성능지표 자동 출력
 
 ## 📊 프로젝트 개요
 
@@ -49,6 +56,26 @@ influenza-prediction-model/
     ├── plot_predictions.png           # 예측 시각화
     └── plot_ma_curves.png             # 이동평균 곡선
 ```
+
+
+## 💾 데이터 및 실행 요약
+
+- **최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 반영
+- **실행 방법:**
+   ```bash
+   python patchTST.py
+   ```
+   (서버 실행 불필요, 실행 후 자동 종료)
+- **출력 파일:**
+   - ili_predictions.csv: 예측 결과
+   - feature_importance.csv, feature_importance.png: 피처 중요도
+   - plot_ma_curves.png, plot_last_window.png, plot_test_reconstruction.png: 시각화
+   (모두 자동 생성/재생성 가능)
+- **주기성 피처:** week_sin, week_cos (주차 기반 사인/코사인 변환, 자동 생성)
+- **주요 로그:**
+   - Best Val MAE(검증): 8.10
+   - Test MAE(테스트): 10.76
+   (실행 로그에서 확인 가능)
 
 ## 💾 데이터베이스 (DuckDB)
 

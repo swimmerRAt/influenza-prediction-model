@@ -165,7 +165,7 @@ class Config:
     
     # ===== Optuna 최적화 설정 =====
     USE_OPTUNA = True       # Optuna 최적화 실행
-    N_TRIALS = 10          # Optuna 최적화 시도 횟수
+    N_TRIALS = 50          # Optuna 최적화 시도 횟수
     OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
     
     # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
@@ -503,7 +503,8 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
             '예방접종률': 'vaccine_rate',
             '입원환자 수': 'hospitalization',
             '인플루엔자 검출률': 'detection_rate',
-            '응급실 인플루엔자 환자': 'emergency_patients'
+            '응급실 인플루엔자 환자': 'emergency_patients',
+            '아형': 'subtype'
         }
         
         df = df.rename(columns=column_mapping)
@@ -573,40 +574,27 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     has_vax  = "vaccine_rate" in df.columns
     has_resp = "respiratory_index" in df.columns or "hospitalization" in df.columns
 
-    # 어떤 특징을 쓸지 결정
-    mode = use_exog.lower()
-    if mode == "auto":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
-        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
-        chosen += climate_feats
-    elif mode == "none":
-        chosen = ["ili"]
-    elif mode == "vax":
-        chosen = ["ili"] + (["vaccine_rate"] if has_vax else [])
-    elif mode == "resp":
-        chosen = ["ili"]
-        if has_resp and "respiratory_index" in df.columns: 
-            chosen.append("respiratory_index")
-        elif has_resp and "hospitalization" in df.columns: 
-            chosen.append("hospitalization")
-    elif mode == "both":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
-        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
-        chosen += climate_feats
-    elif mode == "climate":
-        chosen = ["ili"] + climate_feats
-    elif mode == "all":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp and "respiratory_index" in df.columns: chosen.append("respiratory_index")
-        elif has_resp and "hospitalization" in df.columns: chosen.append("hospitalization")
-        chosen += climate_feats
-    else:
-        raise ValueError(f"Unknown USE_EXOG mode: {use_exog}")
+
+    # 모든 column_mapping 내부명을 feature로 강제 포함
+    column_mapping = {
+        '연도': 'year',
+        '주차': 'week',
+        '의사환자 분율': 'ili',
+        '예방접종률': 'vaccine_rate',
+        '입원환자 수': 'hospitalization',
+        '인플루엔자 검출률': 'detection_rate',
+        '응급실 인플루엔자 환자': 'emergency_patients',
+        '아형': 'subtype'
+    }
+    # week는 week_sin/week_cos로 대체, 나머지는 그대로
+    chosen = []
+    for v in column_mapping.values():
+        if v == "week":
+            chosen += ["week_sin", "week_cos"]
+        else:
+            chosen.append(v)
+    # 중복 제거 및 순서 보존
+    chosen = [x for i, x in enumerate(chosen) if x not in chosen[:i]]
 
     # 숫자화 & 보간
     for c in chosen:
@@ -914,7 +902,19 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     ).to(DEVICE)
 
     # Loss / Optim / Scheduler
-    crit = nn.HuberLoss(delta=1.0)
+    def peak_weighted_loss(pred, target, peak_quantile=0.9, alpha=3.0):
+        """
+        Peak-aware weighted MAE/Huber-style loss.
+        pred, target: (B, H)
+        """
+        with torch.no_grad():
+            # 기준: 배치 내 target 상위 quantile
+            thresh = torch.quantile(target, peak_quantile)
+            weights = torch.ones_like(target)
+            weights[target >= thresh] = alpha
+        return torch.mean(weights * torch.abs(pred - target))
+
+    crit = peak_weighted_loss
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
 
@@ -955,7 +955,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
         with torch.no_grad():
             for Xb,yb,_ in dl_va:
                 Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
-                pred = model(Xb); loss = crit(pred,yb)
+                pred = model(Xb); loss = crit(pred, yb)
                 bs=yb.size(0)
                 va_loss_sum += loss.item()*bs; n+=bs
                 va_mae_sum  += batch_mae_in_original_units(pred, yb, scaler_y)*bs
@@ -1281,8 +1281,25 @@ def compute_feature_importance(model,
             mean_deltas_tst.append(mae_mean_tst - baseline_tst)
 
     # DataFrame 생성
+    # 내부명 → 한글명 매핑 (column_mapping의 value→key 역전)
+    column_mapping = {
+        '연도': 'year',
+        '주차': 'week',
+        '의사환자 분율': 'ili',
+        '예방접종률': 'vaccine_rate',
+        '입원환자 수': 'hospitalization',
+        '인플루엔자 검출률': 'detection_rate',
+        '응급실 인플루엔자 환자': 'emergency_patients',
+        '아형': 'subtype'
+    }
+    # 역매핑: 내부명 → 한글명
+    inv_colmap = {v: k for k, v in column_mapping.items()}
+
+    # feature명 + 한글명 표시
+    feature_disp = [f"{f} ({inv_colmap[f]})" if f in inv_colmap else f for f in feat_names]
+
     df_fi = pd.DataFrame({
-        "feature": feat_names,
+        "feature": feature_disp,
         "perm_delta_val": perm_deltas_val,
         "mean_delta_val": mean_deltas_val,
     })
@@ -1603,7 +1620,18 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN
     ).to(DEVICE)
 
-    crit = nn.HuberLoss(delta=1.0)
+    def peak_weighted_loss(pred, target, peak_quantile=0.9, alpha=3.0):
+        """
+        Peak-aware weighted MAE loss.
+        pred, target: (B, H)
+        """
+        with torch.no_grad():
+            thresh = torch.quantile(target, peak_quantile)
+            weights = torch.ones_like(target)
+            weights[target >= thresh] = alpha
+        return torch.mean(weights * torch.abs(pred - target))
+
+    crit = peak_weighted_loss
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
 

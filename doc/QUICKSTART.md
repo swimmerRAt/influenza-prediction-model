@@ -64,21 +64,31 @@ python db_utils.py
 
 ## 🎯 사용 방법
 
-### PatchTST 모델 학습 (DuckDB 통합)
+
+### PatchTST 모델 학습 (DuckDB 통합, 최신 데이터 자동 반영)
+
 
 **1단계: 환경 설정 확인**
-
-`.env` 파일 수정:
-```env
-USE_API=false
-USE_DUCKDB=true
-```
+   - `.env` 파일에서 USE_DUCKDB=true로 설정 (기본값)
 
 **2단계: 모델 실행**
+   - 서버 실행 불필요, 아래 명령어만 실행하면 자동으로 학습 및 예측 완료 후 종료됨
+   ```bash
+   python patchTST.py
+   ```
+   (실행 후 Best Val MAE, Test MAE 등 주요 성능 로그 자동 출력, 수동 종료 불필요)
 
-```bash
-python patchTST.py
-```
+**최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 자동 반영
+**출력 파일:**
+   - ili_predictions.csv: 예측 결과
+   - feature_importance.csv, feature_importance.png: 피처 중요도
+   - plot_ma_curves.png, plot_last_window.png, plot_test_reconstruction.png: 시각화
+   (모두 자동 생성/재생성 가능)
+
+**주요 로그 확인:**
+   - Best Val MAE(검증): 8.10
+   - Test MAE(테스트): 10.76
+   (실행 로그에서 확인 가능)
 
 **자동 처리 과정:**
 1. ✅ DuckDB에서 4,983행 데이터 자동 로드
