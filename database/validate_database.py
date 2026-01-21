@@ -6,7 +6,7 @@
 
 import pandas as pd
 from pathlib import Path
-from db_utils import load_from_duckdb
+from db_utils import load_from_postgres
 from tabulate import tabulate
 
 def load_original_csvs(before_dir='/Volumes/ExternalSSD/Workspace/influenza-prediction-model/data/before'):
@@ -62,14 +62,35 @@ def validate_merge():
     print("\n[1단계] 원본 CSV 데이터 로드")
     original_data = load_original_csvs()
     
-    # 2. DuckDB 데이터 로드
-    print("\n[2단계] DuckDB 데이터 로드")
-    db_data = load_from_duckdb()
+    # 2. PostgreSQL 데이터 로드
+    print("\n[2단계] PostgreSQL 데이터 로드")
+    from db_utils import load_from_postgres
+    db_data = load_from_postgres()
+    print(db_data.columns)
     
     print(f"\n병합된 데이터베이스:")
     print(f"  - 행 수: {len(db_data)}")
     print(f"  - 컬럼: {list(db_data.columns)}")
-    print(f"  - 연도 범위: {db_data['연도'].min():.0f} ~ {db_data['연도'].max():.0f}")
+    # 컬럼명 매핑 (한글→영문, 영문→한글 모두 지원)
+    col_map = {
+        '연도': 'year', '주차': 'week', '연령대': 'age_group', '의사환자 분율': 'ili',
+        '입원환자 수': 'hospitalization', '아형': 'subtype', '인플루엔자 검출률': 'detection_rate',
+        '예방접종률': 'vaccine_rate', '응급실 인플루엔자 환자': 'emergency_patients'
+    }
+    # 역방향도 추가
+    col_map.update({v: k for k, v in col_map.items()})
+    def get_col(df, *candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+            if col_map.get(c) and col_map[c] in df.columns:
+                return col_map[c]
+        raise KeyError(f"컬럼 후보 {candidates} 중 해당되는 컬럼이 없습니다: {df.columns}")
+
+    # 연도/주차 컬럼명 동적 접근
+    year_col = get_col(db_data, '연도', 'year')
+    week_col = get_col(db_data, '주차', 'week')
+    print(f"  - 연도 범위: {db_data[year_col].min():.0f} ~ {db_data[year_col].max():.0f}")
     
     # 3. 샘플 비교
     print("\n[3단계] 데이터 샘플 비교")
@@ -81,7 +102,7 @@ def validate_merge():
     test_year = 2017
     test_week = 36
     
-    db_sample = db_data[(db_data['연도'] == test_year) & (db_data['주차'] == test_week)]
+    db_sample = db_data[(db_data['year'] == test_year) & (db_data['week'] == test_week)]
     
     print(f"\n병합된 데이터 ({test_year}년 {test_week}주):")
     print(tabulate(db_sample, headers='keys', tablefmt='simple', showindex=False))
@@ -155,30 +176,30 @@ def validate_merge():
                 print(f"\n❌ {dsid}: 응급실 관련 컬럼 없음")
     
     # 8. 아형 데이터 다양성 확인
-    print("\n[8단계] '아형' 데이터 다양성 확인")
+    print("\n[8단계] 'subtype' 데이터 다양성 확인")
     print("\n" + "="*100)
-    print("🔍 원본 CSV 및 병합 데이터에서 아형 다양성 확인")
+    print("🔍 원본 CSV 및 병합 데이터에서 subtype 다양성 확인")
     print("="*100)
     
-    # 원본 CSV에서 아형 데이터 확인
+    # 원본 CSV에서 subtype 데이터 확인
     for dsid, files in original_data.items():
         has_subtype = False
         for file_info in files[:5]:  # 각 데이터셋의 처음 5개 파일
-            if '아형' in file_info['columns']:
+            if 'subtype' in file_info['columns']:
                 if not has_subtype:
                     print(f"\n✅ {dsid}:")
                     has_subtype = True
                 
                 df = file_info['data']
-                unique_subtypes = df['아형'].unique()
-                print(f"   {file_info['year']}년: {len(unique_subtypes)}개 아형 - {', '.join(map(str, unique_subtypes[:10]))}")
+                unique_subtypes = df['subtype'].unique()
+                print(f"   {file_info['year']}년: {len(unique_subtypes)}개 subtype - {', '.join(map(str, unique_subtypes[:10]))}")
     
-    # 병합된 데이터에서 아형 확인
-    print(f"\n병합된 데이터베이스의 아형 다양성:")
-    unique_db_subtypes = db_data['아형'].unique()
-    print(f"  총 {len(unique_db_subtypes)}개의 고유 아형:")
+    # 병합된 데이터에서 subtype 확인
+    print(f"\n병합된 데이터베이스의 subtype 다양성:")
+    unique_db_subtypes = db_data['subtype'].unique()
+    print(f"  총 {len(unique_db_subtypes)}개의 고유 subtype:")
     for subtype in unique_db_subtypes[:20]:
-        count = (db_data['아형'] == subtype).sum()
+        count = (db_data['subtype'] == subtype).sum()
         print(f"    - {subtype}: {count}건")
     
     # 9. 2017년 36주 데이터 상세 비교
@@ -195,13 +216,13 @@ def validate_merge():
         for file_info in files:
             if file_info['year'] == str(test_year):
                 df = file_info['data']
-                week_data = df[df['주차'] == test_week] if '주차' in df.columns else pd.DataFrame()
+                week_data = df[df['week'] == test_week] if 'week' in df.columns else pd.DataFrame()
                 if not week_data.empty:
                     print(f"\n  {dsid} ({file_info['filename']}):")
                     print(f"  {week_data.to_string(index=False, max_colwidth=30)}")
     
     print(f"\n병합된 데이터 ({test_year}년 {test_week}주):")
-    db_sample = db_data[(db_data['연도'] == test_year) & (db_data['주차'] == test_week)]
+    db_sample = db_data[(db_data['year'] == test_year) & (db_data['week'] == test_week)]
     print(tabulate(db_sample, headers='keys', tablefmt='simple', showindex=False, maxcolwidths=30))
     
     # 10. 문제점 검증
@@ -214,24 +235,24 @@ def validate_merge():
     
     # 문제 1: 연령대 손실 확인
     age_group_loss = False
-    if '연령대' in db_data.columns:
-        unique_ages = db_data['연령대'].nunique()
+    if 'age_group' in db_data.columns:
+        unique_ages = db_data['age_group'].nunique()
         if unique_ages < 7:  # 최소 7개 연령대는 있어야 함
             age_group_loss = True
             issues.append(f"연령대 데이터 손실: {unique_ages}개만 존재 (예상: 7개 이상)")
     
-    # 문제 2: 아형 다양성 확인
+    # 문제 2: subtype 다양성 확인
     subtype_loss = False
-    if '아형' in db_data.columns:
-        unique_subtypes = db_data['아형'].nunique()
-        if unique_subtypes < 3:  # 최소 3개 아형 (A(H1N1)pdm09, A(H3N2), B)
+    if 'subtype' in db_data.columns:
+        unique_subtypes = db_data['subtype'].nunique()
+        if unique_subtypes < 3:  # 최소 3개 subtype (A(H1N1)pdm09, A(H3N2), B)
             subtype_loss = True
-            issues.append(f"아형 데이터 손실: {unique_subtypes}개만 존재 (예상: 3개 이상)")
+            issues.append(f"subtype 데이터 손실: {unique_subtypes}개만 존재 (예상: 3개 이상)")
     
     # 문제 3: 입원환자 수 합산 확인 (2017년 36주 예시)
-    test_sample = db_data[(db_data['연도'] == 2017) & (db_data['주차'] == 36) & (db_data['연령대'] == '65세이상')]
-    if not test_sample.empty and '입원환자 수' in test_sample.columns:
-        merged_patients = test_sample['입원환자 수'].iloc[0]
+    test_sample = db_data[(db_data['year'] == 2017) & (db_data['week'] == 36) & (db_data['age_group'] == '65세이상')]
+    if not test_sample.empty and 'hospitalization' in test_sample.columns:
+        merged_patients = test_sample['hospitalization'].iloc[0]
         # 원본: ds_0103=8, ds_0104=1 -> 합계 9
         if merged_patients < 9:
             issues.append(f"입원환자 수 합산 오류: 2017년 36주 65세이상 {merged_patients}명 (예상: 9명)")
@@ -242,7 +263,7 @@ def validate_merge():
         issues.append(f"데이터 과도한 축소: {len(db_data)}행 (예상: {expected_min_rows}행 이상)")
     
     # 문제 5: 필수 컬럼 누락 확인
-    required_columns = ['연도', '주차', '연령대', '의사환자 분율', '입원환자 수', '아형', '인플루엔자 검출률']
+    required_columns = ['year', 'week', 'age_group', 'ili', 'hospitalization', 'subtype', 'detection_rate']
     missing_columns = [col for col in required_columns if col not in db_data.columns]
     if missing_columns:
         issues.append(f"필수 컬럼 누락: {', '.join(missing_columns)}")
@@ -250,7 +271,7 @@ def validate_merge():
     # 문제 6: 결측치 비율이 너무 높은 컬럼 확인 (80% 이상)
     high_missing_cols = []
     for col in db_data.columns:
-        if col in ['연도', '주차', '연령대', '아형']:  # 필수 키 컬럼은 제외
+        if col in ['year', 'week', 'age_group', 'subtype']:  # 필수 키 컬럼은 제외
             continue
         missing_rate = db_data[col].isna().sum() / len(db_data) * 100
         if missing_rate > 80:
@@ -271,8 +292,8 @@ def validate_merge():
         print("="*100)
         print("\n모든 데이터가 올바르게 병합되었습니다:")
         print(f"  • 총 행 수: {len(db_data):,}행")
-        print(f"  • 고유 연령대: {db_data['연령대'].nunique()}개")
-        print(f"  • 고유 아형: {db_data['아형'].nunique()}개")
+        print(f"  • 고유 연령대: {db_data['age_group'].nunique()}개")
+        print(f"  • 고유 subtype: {db_data['subtype'].nunique()}개")
         if not test_sample.empty:
             print(f"  • 입원환자 수 합산: 정상 (2017년 36주 65세이상 {merged_patients}명)")
     

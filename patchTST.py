@@ -23,8 +23,8 @@ except ImportError:
     print("⚠️ Optuna not installed. Hyperparameter optimization disabled.")
     print("   Install with: pip install optuna")
 
-# DuckDB for efficient data loading
-from database.db_utils import TimeSeriesDB, load_from_duckdb
+# PostgreSQL for efficient data loading
+from database.db_utils import TimeSeriesDB, load_from_postgres
 
 # =========================
 # 환경 변수 로드
@@ -56,70 +56,24 @@ CANDIDATE_CSVS = [
     BASE_DIR / "data" / "merged_influenza_data.csv",
 ]
 
+
 # =========================
-# 데이터 로딩 함수
+# 데이터 로딩 함수 (PostgreSQL)
 # =========================
-def load_data_from_duckdb_or_csv(csv_path=None, use_duckdb=None):
+def load_data_from_postgres():
     """
-    DuckDB 또는 로컬 CSV 파일에서 데이터를 로드하는 함수
-    
-    Parameters:
-    -----------
-    csv_path : Path, optional
-        CSV 사용 시 파일 경로
-    use_duckdb : bool, optional
-        True면 DuckDB 사용, False면 CSV 직접 로드 (기본값: 환경변수 USE_DUCKDB)
-    
+    PostgreSQL에서 데이터를 로드하는 함수
     Returns:
-    --------
-    pd.DataFrame
-        로드된 데이터
+        pd.DataFrame: 로드된 데이터
     """
-    if use_duckdb is None:
-        use_duckdb = os.getenv('USE_DUCKDB', 'true').lower() == 'true'
-    
-    print(f"\n📊 데이터 로드 모드: use_duckdb={use_duckdb}")
-    
-    # DuckDB 사용 여부 확인
-    db_path = Path("database/influenza_data.duckdb")
-    
-    if use_duckdb and db_path.exists():
-        print("=" * 50)
-        print("💾 DuckDB 모드: 데이터베이스에서 로드합니다...")
-        print("=" * 50)
-        try:
-            df = load_from_duckdb(
-                db_path=str(db_path),
-                table_name="influenza_data"
-            )
-            print(f"✅ DuckDB 로드 완료: {df.shape}")
-            return df
-        except Exception as e:
-            print(f"⚠️ DuckDB 로드 실패: {e}")
-            print(f"📁 CSV 파일로 전환합니다...")
-            use_duckdb = False
-    
-    if not use_duckdb or not db_path.exists():
-        print("=" * 50)
-        print("📁 CSV 모드: 로컬 파일에서 데이터를 로드합니다...")
-        print("=" * 50)
-        if csv_path is None:
-            csv_path = pick_csv_path()
-        
-        # CSV 파일이 크면 DuckDB로 변환 제안
-        csv_size_mb = csv_path.stat().st_size / (1024 * 1024)
-        if csv_size_mb > 100:  # 100MB 이상
-            print(f"\n💡 팁: CSV 파일이 {csv_size_mb:.1f}MB로 큽니다.")
-            print(f"   DuckDB로 변환하면 로딩 속도가 10~100배 빨라집니다!")
-            print(f"   다음 명령어로 변환하세요:")
-            print(f"   python database/db_utils.py\n")
-        
-        print(f"CSV 파일 로드 중... (시간이 걸릴 수 있습니다)")
-        start_time = time.time()
-        df = pd.read_csv(csv_path)
-        elapsed = time.time() - start_time
-        print(f"✅ CSV 파일 로드 완료: {csv_path}, {df.shape} ({elapsed:.2f}초)")
+    print("\n📊 데이터 로드: PostgreSQL에서 데이터프레임으로 불러옵니다...")
+    try:
+        df = load_from_postgres(table_name="influenza_data")
+        print(f"✅ PostgreSQL 로드 완료: {df.shape}")
         return df
+    except Exception as e:
+        print(f"❌ PostgreSQL 로드 실패: {e}")
+        raise
 
 def pick_csv_path():
     for p in CANDIDATE_CSVS:
@@ -127,20 +81,7 @@ def pick_csv_path():
             return p
     raise FileNotFoundError("No input CSV found among:\n" + "\n".join(map(str, CANDIDATE_CSVS)))
 
-# CSV 파일 경로 설정 (DuckDB 백업용)
-print("\n" + "=" * 60)
-print("📂 CSV 파일 경로 설정")
-print("=" * 60)
 
-try:
-    CSV_PATH = pick_csv_path()
-    print(f"✅ CSV 파일 발견: {CSV_PATH.name}")
-except FileNotFoundError as e:
-    print(f"⚠️ CSV 파일을 찾을 수 없습니다.")
-    print(f"   검색한 경로: {CANDIDATE_CSVS}")
-    CSV_PATH = None
-
-print("=" * 60 + "\n")
 
 def pick_device():
     if torch.cuda.is_available():
@@ -418,7 +359,7 @@ def _norm_season_text(s: str) -> str:
 # =========================
 def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarray, np.ndarray, list, list]:
     """
-    DuckDB 또는 CSV 데이터를 PatchTST 모델 학습용으로 전처리
+    PostgreSQL 또는 CSV 데이터를 PatchTST 모델 학습용으로 전처리
     
     Returns:
         X: (N, F) features (first column should be target variable)
@@ -427,7 +368,7 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         used_feat_names: list[str] feature column names (len=F)
     
     Parameters:
-        df: DuckDB 또는 API에서 가져온 DataFrame
+        df: PostgreSQL 또는 API에서 가져온 DataFrame
         use_exog: 외생변수 사용 모드
     """
     if df is None:
@@ -439,14 +380,14 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     print(f"   - Shape: {df.shape}")
     print(f"   - Columns: {list(df.columns)}")
     
-    # ===== DuckDB 데이터 형식 감지 및 처리 =====
-    is_duckdb_format = all(col in df.columns for col in ['연도', '주차', '연령대'])
+    # ===== PostgreSQL 데이터 형식 감지 및 처리 =====
+    is_postgres_format = all(col in df.columns for col in ['year', 'week', 'age_group'])
     
-    if is_duckdb_format:
-        print(f"\n🔍 DuckDB 데이터 형식 감지됨 - 연령대별 데이터 처리 중...")
+    if is_postgres_format:
+        print(f"\n🔍 PostgreSQL 데이터 형식 감지됨 - 연령대별 데이터 처리 중...")
         
         # 연령대별 데이터 확인
-        age_groups = df['연령대'].unique()
+        age_groups = df['age_group'].unique()
         print(f"   - 고유 연령대: {len(age_groups)}개")
         print(f"   - 연령대 목록: {sorted(age_groups)[:5]}...")
         
@@ -458,56 +399,42 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         for candidate in candidate_age_groups:
             if candidate in age_groups:
                 # 해당 연령대의 데이터 품질 확인
-                temp_df = df[df['연령대'] == candidate].copy()
-                valid_ili = temp_df['의사환자 분율'].notna().sum()
+                temp_df = df[df['age_group'] == candidate].copy()
+                valid_ili = temp_df['ili'].notna().sum()
                 if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
                     target_age_group = candidate
                     break
         
         if target_age_group and target_age_group in age_groups:
             print(f"   - '{target_age_group}' 연령대 데이터 사용")
-            df_age = df[df['연령대'] == target_age_group].copy()
+            df_age = df[df['age_group'] == target_age_group].copy()
             
             # ⭐ 의사환자 분율이 NaN인 행 제거 (필수!)
             before_count = len(df_age)
-            df_age = df_age[df_age['의사환자 분율'].notna()].copy()
+            df_age = df_age[df_age['ili'].notna()].copy()
             after_count = len(df_age)
             if before_count > after_count:
                 print(f"   - 의사환자 분율 NaN 행 제거: {before_count - after_count}개 제거됨")
             
             # 예방접종률이 모두 NaN인 경우 전체 평균으로 채우기
-            if df_age['예방접종률'].notna().sum() == 0:
+            if df_age['vaccine_rate'].notna().sum() == 0:
                 print(f"   - '{target_age_group}' 연령대에 예방접종률 데이터 없음 - 전체 평균 사용")
                 # 연도/주차별로 전체 연령대의 예방접종률 평균 계산
-                vaccine_avg = df.groupby(['연도', '주차'], as_index=False)['예방접종률'].mean()
-                vaccine_avg = vaccine_avg.rename(columns={'예방접종률': '예방접종률_전체평균'})
-                df_age = df_age.merge(vaccine_avg, on=['연도', '주차'], how='left')
-                df_age['예방접종률'] = df_age['예방접종률_전체평균']
-                df_age = df_age.drop(columns=['예방접종률_전체평균'])
+                vaccine_avg = df.groupby(['year', 'week'], as_index=False)['vaccine_rate'].mean()
+                vaccine_avg = vaccine_avg.rename(columns={'vaccine_rate': 'vaccine_rate_avg'})
+                df_age = df_age.merge(vaccine_avg, on=['year', 'week'], how='left')
+                df_age['vaccine_rate'] = df_age['vaccine_rate_avg']
+                df_age = df_age.drop(columns=['vaccine_rate_avg'])
             
             df = df_age
         else:
             # 적절한 단일 연령대가 없으면 연도/주차별 평균 사용
             print(f"   - 연도/주차별 전체 연령대 평균 사용")
-            numeric_cols = ['의사환자 분율', '입원환자 수', '인플루엔자 검출률', '예방접종률', '응급실 인플루엔자 환자']
+            numeric_cols = ['ili', 'hospitalization', 'detection_rate', 'vaccine_rate', 'emergency_patients']
             agg_dict = {col: 'mean' for col in numeric_cols if col in df.columns}
-            agg_dict['아형'] = 'first'  # 아형은 첫 값 사용
+            agg_dict['subtype'] = 'first'  # 아형은 첫 값 사용
             
-            df = df.groupby(['연도', '주차'], as_index=False).agg(agg_dict)
-        
-        # 컬럼명 매핑 (DuckDB -> 기존 형식)
-        column_mapping = {
-            '연도': 'year',
-            '주차': 'week',
-            '의사환자 분율': 'ili',
-            '예방접종률': 'vaccine_rate',
-            '입원환자 수': 'hospitalization',
-            '인플루엔자 검출률': 'detection_rate',
-            '응급실 인플루엔자 환자': 'emergency_patients',
-            '아형': 'subtype'
-        }
-        
-        df = df.rename(columns=column_mapping)
+            df = df.groupby(['year', 'week'], as_index=False).agg(agg_dict)
         
         # 정렬
         df = df.sort_values(['year', 'week']).reset_index(drop=True)
@@ -519,7 +446,7 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
             axis=1
         )
         
-        print(f"\n✅ DuckDB 데이터 변환 완료:")
+        print(f"\n✅ PostgreSQL 데이터 변환 완료:")
         print(f"   - 변환 후 Shape: {df.shape}")
         print(f"   - 연도 범위: {df['year'].min():.0f} ~ {df['year'].max():.0f}")
         print(f"   - 주차 범위: {df['week'].min():.0f} ~ {df['week'].max():.0f}")
@@ -568,7 +495,7 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     if "wx_week_avg_temp" in df.columns:     climate_feats.append("wx_week_avg_temp")
     if "wx_week_avg_rain" in df.columns:     climate_feats.append("wx_week_avg_rain")
     if "wx_week_avg_humidity" in df.columns: climate_feats.append("wx_week_avg_humidity")
-    if "detection_rate" in df.columns:       climate_feats.append("detection_rate")  # DuckDB 특성
+    if "detection_rate" in df.columns:       climate_feats.append("detection_rate")  # PostgreSQL 특성
 
     # 외생 후보 존재 여부
     has_vax  = "vaccine_rate" in df.columns
@@ -1154,11 +1081,11 @@ if __name__ == "__main__":
     print("🚀 " * 30 + "\n")
     
     print("=" * 60)
-    print("💾 DuckDB/CSV 모드: 로컬 데이터 로드")
+    print("💾 PostgreSQL 모드: 데이터베이스에서 데이터 로드")
     print("=" * 60)
     
-    # DuckDB 또는 CSV에서 데이터 로드
-    df = load_data_from_duckdb_or_csv()
+    # PostgreSQL에서 데이터 로드
+    df = load_data_from_postgres()
     
     print("\n" + "✅ " * 30)
     print("데이터 로드 완료!")

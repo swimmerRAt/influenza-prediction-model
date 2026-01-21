@@ -1,18 +1,20 @@
-"""
-DuckDB를 사용한 시계열 데이터 관리 유틸리티
 
-DuckDB는 OLAP(분석) 워크로드에 최적화된 임베디드 데이터베이스로,
-대용량 CSV 파일을 빠르게 처리하고 효율적으로 쿼리할 수 있습니다.
+"""
+PostgreSQL을 사용한 시계열 데이터 관리 유틸리티
+
+PostgreSQL은 강력한 트랜잭션, 확장성, SQL 표준 지원을 제공하는 오픈소스 RDBMS입니다.
+대용량 CSV 파일을 효율적으로 처리하고, 외부 연결 및 분석에 적합합니다.
 
 주요 기능:
-- CSV를 DuckDB/Parquet으로 변환하여 저장 공간 절약 및 로딩 속도 향상
+- CSV를 PostgreSQL 테이블로 임포트
 - SQL 쿼리를 통한 유연한 데이터 필터링
-- Pandas와의 원활한 통합
-- 메모리 효율적인 대용량 데이터 처리
+- Pandas와의 통합
+- 대용량 데이터 처리
 - API를 통한 최신 데이터 자동 업데이트
 """
 
-import duckdb
+import psycopg2
+import psycopg2.extras
 import pandas as pd
 from pathlib import Path
 from typing import Optional, List
@@ -33,31 +35,124 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class TimeSeriesDB:
-    """시계열 데이터를 DuckDB로 관리하는 클래스"""
-    
-    def __init__(self, db_path: str = "influenza_data.duckdb"):
-        """
-        Parameters:
-        -----------
-        db_path : str
-            DuckDB 데이터베이스 파일 경로
-        """
-        self.db_path = Path(db_path)
+    """시계열 데이터를 PostgreSQL로 관리하는 클래스"""
+    def __init__(self, host=None, dbname=None, user=None, password=None, port=5432):
+        self.host = host or os.getenv('PG_HOST', 'localhost')
+        self.dbname = dbname or os.getenv('PG_DB', 'influenza')
+        self.user = user or os.getenv('PG_USER', 'postgres')
+        self.password = password or os.getenv('PG_PASSWORD', 'postgres')
+        self.port = int(port or os.getenv('PG_PORT', 5432))
         self.conn = None
-        
+
+    def insert_dataframe(self, df: pd.DataFrame, table_name: str = "influenza_data", if_exists: str = "append"):
+        """
+        DataFrame 데이터를 PostgreSQL 테이블에 적재
+        (컬럼명 매핑 및 결측치 None 처리)
+        """
+        self.connect()
+        # 한글→영문 매핑 (테이블 생성과 동일)
+        col_map = {
+            '연도': 'year',
+            '주차': 'week',
+            '연령대': 'age_group',
+            '의사환자 분율': 'ili',
+            '입원환자 수': 'hospitalization',
+            '아형': 'subtype',
+            '인플루엔자 검출률': 'detection_rate',
+            '예방접종률': 'vaccine_rate',
+            '응급실 인플루엔자 환자': 'emergency_patients',
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+        # 결측치 None으로 변환
+        df = df.where(pd.notnull(df), None)
+        columns = list(df.columns)
+        values = df.values.tolist()
+        placeholders = ','.join(['%s'] * len(columns))
+        col_names = ','.join([f'"{col}"' for col in columns])
+        sql = f'INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})'
+        with self.conn.cursor() as cur:
+            psycopg2.extras.execute_batch(cur, sql, values)
+        self.conn.commit()
+        print(f"✅ 데이터 {len(df)}건 적재 완료: {table_name}")
+
+    def create_table_from_dataframe(self, df: pd.DataFrame, table_name: str = "influenza_data", if_exists: str = "fail"):
+        """
+        DataFrame의 컬럼 정보를 기반으로 PostgreSQL 테이블 생성
+        (한글 컬럼명은 영문으로 매핑 필요)
+        """
+        self.connect()
+        # 한글→영문 매핑 (기존 col_map 활용)
+        col_map = {
+            '연도': 'year',
+            '주차': 'week',
+            '연령대': 'age_group',
+            '의사환자 분율': 'ili',
+            '입원환자 수': 'hospitalization',
+            '아형': 'subtype',
+            '인플루엔자 검출률': 'detection_rate',
+            '예방접종률': 'vaccine_rate',
+            '응급실 인플루엔자 환자': 'emergency_patients',
+        }
+        columns = []
+        for col in df.columns:
+            col_eng = col_map.get(col, col)
+            # 간단한 타입 추론 (float, int, str)
+            sample = df[col].dropna()
+            if not sample.empty:
+                v = sample.iloc[0]
+                if isinstance(v, float):
+                    col_type = 'DOUBLE PRECISION'
+                elif isinstance(v, int):
+                    col_type = 'INTEGER'
+                else:
+                    col_type = 'TEXT'
+            else:
+                col_type = 'TEXT'
+            columns.append(f'"{col_eng}" {col_type}')
+        col_defs = ', '.join(columns)
+        sql = f'CREATE TABLE {table_name} ({col_defs})'
+        if if_exists == "replace":
+            with self.conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+            self.conn.commit()
+        elif if_exists == "fail":
+            # 이미 존재하면 생성하지 않음
+            with self.conn.cursor() as cur:
+                cur.execute(f"SELECT to_regclass('{table_name}')")
+                exists = cur.fetchone()[0]
+            if exists:
+                print(f"⚠️ 이미 테이블이 존재합니다: {table_name}")
+                return
+        with self.conn.cursor() as cur:
+            cur.execute(sql)
+        self.conn.commit()
+        print(f"✅ 테이블 생성 완료: {table_name}")
+    """시계열 데이터를 PostgreSQL로 관리하는 클래스"""
+    def __init__(self, host=None, dbname=None, user=None, password=None, port=5432):
+        self.host = host or os.getenv('PG_HOST', 'localhost')
+        self.dbname = dbname or os.getenv('PG_DB', 'influenza')
+        self.user = user or os.getenv('PG_USER', 'postgres')
+        self.password = password or os.getenv('PG_PASSWORD', 'postgres')
+        self.port = int(port or os.getenv('PG_PORT', 5432))
+        self.conn = None
+
     def connect(self):
-        """데이터베이스 연결"""
         if self.conn is None:
-            self.conn = duckdb.connect(str(self.db_path))
-            print(f"✅ DuckDB 연결됨: {self.db_path}")
+            self.conn = psycopg2.connect(
+                host=self.host,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+                port=self.port
+            )
+            print(f"✅ PostgreSQL 연결됨: {self.dbname}@{self.host}:{self.port}")
         return self.conn
-    
+
     def close(self):
-        """데이터베이스 연결 종료"""
         if self.conn:
             self.conn.close()
             self.conn = None
-            print("✅ DuckDB 연결 종료됨")
+            print("✅ PostgreSQL 연결 종료됨")
     
     def __enter__(self):
         """컨텍스트 매니저 진입"""
@@ -69,102 +164,26 @@ class TimeSeriesDB:
         self.close()
     
     def import_csv_to_db(
-        self, 
-        csv_path: str, 
+        self,
+        csv_path: str,
         table_name: str = "influenza_data",
         chunk_size: int = 100000,
         show_progress: bool = True
     ):
         """
-        대용량 CSV를 DuckDB 테이블로 임포트
-        
-        Parameters:
-        -----------
-        csv_path : str
-            CSV 파일 경로
-        table_name : str
-            생성할 테이블 이름
-        chunk_size : int
-            한 번에 읽을 행 수 (메모리 관리용)
-        show_progress : bool
-            진행 상황 표시 여부
+        대용량 CSV를 PostgreSQL 테이블로 임포트
+        (DuckDB의 read_csv_auto와 달리 pandas+copy_from 사용)
         """
-        self.connect()
-        csv_path = Path(csv_path)
-        
-        if not csv_path.exists():
-            raise FileNotFoundError(f"CSV 파일을 찾을 수 없습니다: {csv_path}")
-        
-        print(f"\n{'='*60}")
-        print(f"📥 CSV → DuckDB 임포트 시작")
-        print(f"{'='*60}")
-        print(f"원본 파일: {csv_path.name}")
-        print(f"테이블명: {table_name}")
-        
-        start_time = time.time()
-        
-        # DuckDB는 CSV를 직접 읽어서 테이블로 만들 수 있습니다 (매우 빠름)
-        self.conn.execute(f"""
-            CREATE OR REPLACE TABLE {table_name} AS 
-            SELECT * FROM read_csv_auto('{csv_path}', 
-                header=true,
-                sample_size=100000
-            )
-        """)
-        
-        # 테이블 정보 확인
-        row_count = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        
-        elapsed = time.time() - start_time
-        
-        print(f"\n✅ 임포트 완료!")
-        print(f"   • 총 행 수: {row_count:,}")
-        print(f"   • 소요 시간: {elapsed:.2f}초")
-        print(f"   • 초당 처리: {row_count/elapsed:,.0f} 행/초")
-        print(f"{'='*60}\n")
-        
-        # 데이터베이스 파일 크기 확인
-        if self.db_path.exists():
-            db_size_mb = self.db_path.stat().st_size / (1024 * 1024)
-            csv_size_mb = csv_path.stat().st_size / (1024 * 1024)
-            compression_ratio = (1 - db_size_mb / csv_size_mb) * 100
-            
-            print(f"💾 저장 공간:")
-            print(f"   • 원본 CSV: {csv_size_mb:.1f} MB")
-            print(f"   • DuckDB: {db_size_mb:.1f} MB")
-            print(f"   • 압축률: {compression_ratio:.1f}% 절약\n")
+        # ...구현은 이후 단계에서 추가...
+        pass
     
-    def export_to_parquet(
-        self, 
-        table_name: str = "influenza_data",
-        parquet_path: str = "influenza_data.parquet"
-    ):
+    def export_to_parquet(self, *args, **kwargs):
         """
-        DuckDB 테이블을 Parquet 파일로 내보내기
-        Parquet은 컬럼 기반 포맷으로 분석 쿼리에 매우 효율적
-        
-        Parameters:
-        -----------
-        table_name : str
-            내보낼 테이블 이름
-        parquet_path : str
-            저장할 Parquet 파일 경로
+        (DuckDB 전용 기능) PostgreSQL에서는 직접 Parquet 내보내기 미지원.
+        필요시 pandas DataFrame으로 export 후 pyarrow 등으로 저장 가능.
         """
-        self.connect()
-        
-        print(f"\n📤 Parquet 내보내기: {table_name} → {parquet_path}")
-        start_time = time.time()
-        
-        self.conn.execute(f"""
-            COPY {table_name} TO '{parquet_path}' 
-            (FORMAT PARQUET, COMPRESSION 'ZSTD')
-        """)
-        
-        elapsed = time.time() - start_time
-        parquet_size_mb = Path(parquet_path).stat().st_size / (1024 * 1024)
-        
-        print(f"✅ 완료! ({elapsed:.2f}초)")
-        print(f"   • 파일 크기: {parquet_size_mb:.1f} MB\n")
+        print("⚠️ PostgreSQL은 Parquet 직접 내보내기를 지원하지 않습니다.")
+        pass
     
     def load_data(
         self,
@@ -175,182 +194,88 @@ class TimeSeriesDB:
         order_by: Optional[str] = None
     ) -> pd.DataFrame:
         """
-        DuckDB 테이블에서 데이터를 Pandas DataFrame으로 로드
-        
-        Parameters:
-        -----------
-        table_name : str
-            로드할 테이블 이름
-        columns : List[str], optional
-            로드할 컬럼 리스트 (None이면 모든 컬럼)
-        where : str, optional
-            WHERE 절 조건 (예: "season_norm >= 2020")
-        limit : int, optional
-            로드할 최대 행 수
-        order_by : str, optional
-            정렬 기준 (예: "date DESC")
-        
-        Returns:
-        --------
-        pd.DataFrame
-            로드된 데이터
+        PostgreSQL 테이블에서 데이터를 Pandas DataFrame으로 로드
         """
         self.connect()
-        
-        # SQL 쿼리 구성 (컬럼명을 따옴표로 감싸서 공백/특수문자 처리)
         if columns is None:
             select_cols = "*"
         else:
-            # 컬럼명을 따옴표로 감싸기
             select_cols = ", ".join([f'"{col}"' for col in columns])
-        
         query = f"SELECT {select_cols} FROM {table_name}"
-        
         if where:
             query += f" WHERE {where}"
-        
         if order_by:
             query += f" ORDER BY {order_by}"
-        
         if limit:
             query += f" LIMIT {limit}"
-        
         print(f"\n📊 데이터 로드 중...")
         print(f"쿼리: {query[:100]}{'...' if len(query) > 100 else ''}")
-        
         start_time = time.time()
-        df = self.conn.execute(query).df()
+        df = pd.read_sql_query(query, self.conn)
         elapsed = time.time() - start_time
-        
         print(f"✅ 로드 완료: {df.shape[0]:,} 행 × {df.shape[1]} 열 ({elapsed:.2f}초)\n")
-        
         return df
     
     def get_table_info(self, table_name: str = "influenza_data"):
         """
         테이블 정보 출력 (컬럼명, 데이터 타입, 샘플 데이터)
-        
-        Parameters:
-        -----------
-        table_name : str
-            확인할 테이블 이름
         """
         self.connect()
-        
         print(f"\n{'='*60}")
         print(f"📋 테이블 정보: {table_name}")
         print(f"{'='*60}")
-        
-        # 테이블 스키마
-        schema = self.conn.execute(f"DESCRIBE {table_name}").df()
+        # PostgreSQL에서 컬럼 정보 조회
+        query = f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table_name}'"
+        schema = pd.read_sql_query(query, self.conn)
         print("\n컬럼 정보:")
         print(schema.to_string(index=False))
-        
         # 행 수
-        row_count = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        row_count = pd.read_sql_query(f"SELECT COUNT(*) FROM {table_name}", self.conn).iloc[0, 0]
         print(f"\n총 행 수: {row_count:,}")
-        
         # 샘플 데이터
         print("\n샘플 데이터 (처음 5행):")
-        sample = self.conn.execute(f"SELECT * FROM {table_name} LIMIT 5").df()
-        print(sample.to_string())
-        
-        # 날짜 범위 (label 컬럼이 있다고 가정)
-        try:
-            date_range = self.conn.execute(f"""
-                SELECT 
-                    MIN(label) as start_period,
-                    MAX(label) as end_period
-                FROM {table_name}
-            """).df()
-            print("\n기간:")
-            print(date_range.to_string(index=False))
-        except:
-            pass
-        
+        sample = pd.read_sql_query(f"SELECT * FROM {table_name} LIMIT 5", self.conn)
+        print(sample.to_string(index=False))
         print(f"{'='*60}\n")
     
-    def create_indices(self, table_name: str = "influenza_data"):
+    def create_indices(self, table_name: str = "influenza_data", columns: Optional[list] = None):
         """
-        자주 쿼리하는 컬럼에 인덱스 생성 (쿼리 속도 향상)
-        
-        Parameters:
-        -----------
-        table_name : str
-            인덱스를 생성할 테이블 이름
+        PostgreSQL 인덱스 생성 (명시적으로 지정 필요)
         """
         self.connect()
-        
-        print(f"\n🔍 인덱스 생성 중...")
-        
-        # DuckDB는 자동으로 쿼리 최적화를 하지만,
-        # 명시적으로 인덱스를 생성할 수도 있습니다
-        # 참고: DuckDB는 인메모리 최적화를 자동으로 수행
-        
-        print(f"✅ DuckDB는 자동 최적화를 사용합니다\n")
+        if columns:
+            for col in columns:
+                sql = f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name} (\"{col}\");"
+                with self.conn.cursor() as cur:
+                    cur.execute(sql)
+            self.conn.commit()
+            print(f"✅ 인덱스 생성 완료: {columns}")
+        else:
+            print("⚠️ 인덱스 생성할 컬럼을 지정하세요.")
     
     def optimize_database(self):
-        """데이터베이스 최적화 (VACUUM, ANALYZE)"""
+        """PostgreSQL 데이터베이스 최적화 (ANALYZE)"""
         self.connect()
-        
-        print(f"\n🔧 데이터베이스 최적화 중...")
-        
-        # ANALYZE: 통계 정보 업데이트로 쿼리 최적화
-        self.conn.execute("ANALYZE")
-        
-        print(f"✅ 최적화 완료\n")
+        with self.conn.cursor() as cur:
+            cur.execute("ANALYZE;")
+        self.conn.commit()
+        print(f"✅ PostgreSQL ANALYZE 완료\n")
 
 
-def convert_csv_to_duckdb(
-    csv_path: str,
-    db_path: str = "influenza_data.duckdb",
-    table_name: str = "influenza_data"
-):
-    """
-    편의 함수: CSV를 DuckDB로 변환
-    
-    Parameters:
-    -----------
-    csv_path : str
-        변환할 CSV 파일 경로
-    db_path : str
-        생성할 DuckDB 파일 경로
-    table_name : str
-        테이블 이름
-    """
-    with TimeSeriesDB(db_path) as db:
-        db.import_csv_to_db(csv_path, table_name)
-        db.get_table_info(table_name)
-        db.optimize_database()
-    
-    print(f"✅ 변환 완료: {db_path}")
-    return db_path
 
-
-def load_from_duckdb(
-    db_path: str = "influenza_data.duckdb",
+def load_from_postgres(
     table_name: str = "influenza_data",
     **kwargs
 ) -> pd.DataFrame:
     """
-    편의 함수: DuckDB에서 데이터 로드
-    
-    Parameters:
-    -----------
-    db_path : str
-        DuckDB 파일 경로
-    table_name : str
-        로드할 테이블 이름
-    **kwargs
-        load_data() 함수에 전달할 추가 인자
-    
-    Returns:
-    --------
-    pd.DataFrame
-        로드된 데이터
+    편의 함수: PostgreSQL에서 데이터 로드
     """
-    with TimeSeriesDB(db_path) as db:
+    db = TimeSeriesDB()
+    try:
+        db.connect()
         return db.load_data(table_name, **kwargs)
+    finally:
+        db.close()
 
 
 def fetch_latest_data_from_api(api_url: str = None, dataset_ids: List[str] = None) -> pd.DataFrame:
@@ -644,11 +569,23 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
         for subtype, count in subtypes.items():
             print(f"  {subtype}: {count}건")
     
+    # 한글→영문 컬럼명 매핑 (누락 방지)
+    col_map = {
+        '연도': 'year',
+        '주차': 'week',
+        '연령대': 'age_group',
+        '의사환자 분율': 'ili',
+        '입원환자 수': 'hospitalization',
+        '아형': 'subtype',
+        '인플루엔자 검출률': 'detection_rate',
+        '예방접종률': 'vaccine_rate',
+        '응급실 인플루엔자 환자': 'emergency_patients',
+    }
+    df_consolidated = df_consolidated.rename(columns=col_map)
     return df_consolidated
 
 
 def merge_and_update_database(
-    db_path: str = "influenza_data.duckdb",
     table_name: str = "influenza_data",
     fetch_latest: bool = True,
     api_url: str = None,
@@ -656,30 +593,23 @@ def merge_and_update_database(
     consolidate: bool = True
 ):
     """
-    1.4. DuckDB에 저장
-    print("\n[단계 4/4] DuckDB 저장")
-    with TimeSeriesDB(db_path) as db:
-        print(f"DuckDB에 저장 중...")
-        start_time = time.time()
-        
-        # 기존 테이블 삭제 후 새로 생성
-        db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-        db.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df_merged")
-        
-        elapsed = time.time() - start_time
-        row_count = db.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        
-        print(f"✅ DuckDB 저장 완료!")
-        print(f"   • 테이블: {table_name}")
-        print(f"   • 행 수: {row_count:,}")
-        print(f"   • 컬럼 수: {len(df_merged.columns)
+    API, 과거 데이터, 기존 데이터를 병합하여 PostgreSQL에 업데이트
+    
+    Parameters
+    ----------
+    table_name : str
+        PostgreSQL 테이블 이름
+    fetch_latest : bool
+        API에서 최신 데이터 가져올지 여부
+    api_url : str
+        API URL (None이면 환경변수 사용)
     before_dir : str
         과거 데이터 디렉토리
     consolidate : bool
         같은 연도/주차 데이터를 한 행으로 통합할지 여부 (기본: True)
     """
     print("\n" + "="*60)
-    print("🔄 데이터 병합 및 DuckDB 업데이트 프로세스")
+    print("🔄 데이터 병합 및 PostgreSQL 업데이트 프로세스")
     print("="*60)
     
     all_data = []
@@ -720,24 +650,29 @@ def merge_and_update_database(
     
     print(f"\n최종 병합 데이터: {df_merged.shape}")
     
-    # DuckDB에 저장
-    with TimeSeriesDB(db_path) as db:
-        print(f"\nDuckDB에 저장 중...")
+    # PostgreSQL에 저장
+    with TimeSeriesDB() as db:
+        print(f"\nPostgreSQL에 저장 중...")
         start_time = time.time()
         
         # 기존 테이블 삭제 후 새로 생성
-        db.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-        db.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df_merged")
+        with db.conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+            db.conn.commit()
+        
+        # 테이블 생성 및 데이터 삽입
+        db.create_table_from_dataframe(df_merged, table_name, if_exists="replace")
+        db.insert_dataframe(df_merged, table_name)
         
         elapsed = time.time() - start_time
-        row_count = db.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        with db.conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+            row_count = cur.fetchone()[0]
         
-        print(f"✅ DuckDB 저장 완료!")
+        print(f"✅ PostgreSQL 저장 완료!")
         print(f"   • 테이블: {table_name}")
         print(f"   • 행 수: {row_count:,}")
         print(f"   • 소요 시간: {elapsed:.2f}초")
-        
-        db.optimize_database()
     
     # CSV로도 저장 (백업)
     csv_output = "merged_influenza_data.csv"
@@ -756,7 +691,7 @@ if __name__ == "__main__":
     
     # 사용 예제
     print("=" * 60)
-    print("DuckDB 시계열 데이터 관리 유틸리티")
+    print("PostgreSQL 시계열 데이터 관리 유틸리티")
     print("=" * 60)
     
     # 명령행 인자 확인
@@ -764,41 +699,44 @@ if __name__ == "__main__":
         # 업데이트 모드: API + 과거 데이터 + 기존 데이터 병합
         print("\n🔄 업데이트 모드: API에서 최신 데이터 가져와서 병합")
         merge_and_update_database(
-            db_path="influenza_data.duckdb",
             table_name="influenza_data",
             fetch_latest=True,
             before_dir='data/before'
         )
     else:
-        # 기본 모드: 기존 CSV를 DuckDB로 변환
+        # 기본 모드: 기존 CSV를 PostgreSQL로 변환
         csv_file = "merged_influenza_data.csv"
         if Path(csv_file).exists():
-            db_path = convert_csv_to_duckdb(
-                csv_path=csv_file,
-                db_path="influenza_data.duckdb",
-                table_name="influenza_data"
-            )
+            print(f"\n📄 CSV 파일을 PostgreSQL로 변환 중: {csv_file}")
+            
+            # CSV 데이터 로드
+            df = pd.read_csv(csv_file)
+            
+            # PostgreSQL에 저장
+            with TimeSeriesDB() as db:
+                db.create_table_from_dataframe(df, "influenza_data", if_exists="replace")
+                db.insert_dataframe(df, "influenza_data")
             
             print("\n" + "=" * 60)
             print("사용 예제:")
             print("=" * 60)
             print("""
 # 전체 데이터 로드
-df = load_from_duckdb()
+df = load_from_postgres()
 
 # 특정 컬럼만 로드
-df = load_from_duckdb(columns=['year', 'week', '의사환자 분율'])
+df = load_from_postgres(columns=['year', 'week', 'ili'])
 
 # 조건부 로드
-df = load_from_duckdb(where="year >= 2020")
+df = load_from_postgres(where="year >= 2020")
 
 # 최근 1000개 데이터만
-df = load_from_duckdb(limit=1000, order_by="year DESC, week DESC")
+df = load_from_postgres(limit=1000, order_by="year DESC, week DESC")
 
 # API + 과거 데이터 + 기존 데이터 병합하여 업데이트
 python db_utils.py --update
             """)
         else:
             print(f"\n⚠️ CSV 파일을 찾을 수 없습니다: {csv_file}")
-            print("\n💡 API에서 데이터를 가져와 DuckDB를 생성하려면:")
+            print("\n💡 API에서 데이터를 가져와 PostgreSQL을 생성하려면:")
             print("   python db_utils.py --update")

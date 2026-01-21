@@ -1,11 +1,12 @@
+
 """
-DuckDB 업데이트 프로세스 테스트
+PostgreSQL 업데이트 프로세스 테스트
 
 이 스크립트는 다음 작업을 수행합니다:
 1. API에서 최신 데이터 가져오기
 2. data/before 폴더의 과거 데이터 로딩
 3. 모든 데이터 병합
-4. DuckDB에 저장
+4. PostgreSQL에 저장
 """
 
 try:
@@ -19,7 +20,7 @@ import os
 
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("📊 인플루엔자 데이터 병합 및 DuckDB 업데이트")
+    print("📊 인플루엔자 데이터 병합 및 PostgreSQL 업데이트")
     print("="*60)
     
     # 환경 확인
@@ -33,20 +34,18 @@ if __name__ == "__main__":
     print("  1. API에서 최신 데이터 가져오기")
     print("  2. data/before 폴더의 과거 데이터 로딩")
     print("  3. 모든 데이터 병합 및 중복 제거")
-    print("  4. DuckDB에 저장")
+    print("  4. PostgreSQL에 저장")
     print("  5. CSV로 백업")
     
     response = input("\n계속하시겠습니까? (y/n): ").lower()
     
     if response == 'y':
         merge_and_update_database(
-            db_path="influenza_data.duckdb",
             table_name="influenza_data",
             fetch_latest=True,  # API에서 최신 데이터 가져오기
             before_dir='data/before',
             consolidate=True  # 수정된 병합 로직 사용
         )
-        
         print("\n" + "="*60)
         print("✅ 작업 완료!")
         print("="*60)
