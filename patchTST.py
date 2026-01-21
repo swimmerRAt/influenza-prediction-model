@@ -13,6 +13,17 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 
+# matplotlib 한글 폰트 설정 (macOS)
+import platform
+if platform.system() == 'Darwin':  # macOS
+    plt.rcParams['font.family'] = 'AppleGothic'
+elif platform.system() == 'Windows':
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+else:  # Linux
+    plt.rcParams['font.family'] = 'NanumGothic'
+
+plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
+
 # Optuna for hyperparameter optimization
 try:
     import optuna
@@ -386,9 +397,32 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     if is_postgres_format:
         print(f"\n🔍 PostgreSQL 데이터 형식 감지됨 - 연령대별 데이터 처리 중...")
         
+        # ===== 팬데믹 기간 데이터 제외 (2020년 14주 ~ 2022년 22주) =====
+        print(f"\n⚠️ 팬데믹 기간 데이터 제외 중 (2020년 14주 ~ 2022년 22주)...")
+        before_count = len(df)
+        
+        # 팬데믹 기간 마스크 생성
+        pandemic_mask = (
+            ((df['year'] == 2020) & (df['week'] >= 14)) |
+            ((df['year'] == 2021)) |
+            ((df['year'] == 2022) & (df['week'] <= 22))
+        )
+        
+        # 팬데믹 기간 제외
+        df = df[~pandemic_mask].copy()
+        after_count = len(df)
+        removed_count = before_count - after_count
+        
+        print(f"   - 제거 전: {before_count:,}행")
+        print(f"   - 제거 후: {after_count:,}행")
+        print(f"   - 제거됨: {removed_count:,}행 ({removed_count/before_count*100:.1f}%)")
+        
+        if after_count == 0:
+            raise ValueError("팬데믹 기간 제외 후 데이터가 없습니다. 데이터 범위를 확인하세요.")
+        
         # 연령대별 데이터 확인
         age_groups = df['age_group'].unique()
-        print(f"   - 고유 연령대: {len(age_groups)}개")
+        print(f"\n   - 고유 연령대: {len(age_groups)}개")
         print(f"   - 연령대 목록: {sorted(age_groups)[:5]}...")
         
         # 여러 연령대 중 데이터가 가장 풍부한 연령대 선택
@@ -769,6 +803,52 @@ def batch_mae_in_original_units(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_
 
     return float(np.mean(np.abs(p_orig - t_orig)))
 
+def batch_rmse_in_original_units(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
+    """
+    Compute RMSE in original units for single-step or multi-step prediction.
+    """
+    p = pred_b.detach().cpu().numpy()
+    t = y_b.detach().cpu().numpy()
+
+    if p.ndim == 1:
+        p = p[:, None]
+    if t.ndim == 1:
+        t = t[:, None]
+
+    if p.shape[1] == 1 and t.shape[1] > 1:
+        p = np.repeat(p, t.shape[1], axis=1)
+
+    p = p.reshape(-1, 1)
+    t = t.reshape(-1, 1)
+
+    p_orig = scaler_y.inverse_transform(p).reshape(-1)
+    t_orig = scaler_y.inverse_transform(t).reshape(-1)
+
+    return float(np.sqrt(np.mean((p_orig - t_orig)**2)))
+
+def batch_mse_in_original_units(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
+    """
+    Compute MSE in original units for single-step or multi-step prediction.
+    """
+    p = pred_b.detach().cpu().numpy()
+    t = y_b.detach().cpu().numpy()
+
+    if p.ndim == 1:
+        p = p[:, None]
+    if t.ndim == 1:
+        t = t[:, None]
+
+    if p.shape[1] == 1 and t.shape[1] > 1:
+        p = np.repeat(p, t.shape[1], axis=1)
+
+    p = p.reshape(-1, 1)
+    t = t.reshape(-1, 1)
+
+    p_orig = scaler_y.inverse_transform(p).reshape(-1)
+    t_orig = scaler_y.inverse_transform(t).reshape(-1)
+
+    return float(np.mean((p_orig - t_orig)**2))
+
 def batch_corrcoef(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
     """
     Pearson correlation coefficient (batch 평균)
@@ -932,13 +1012,18 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     yhat  = scaler_y.inverse_transform(yhat_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
     ytrue = scaler_y.inverse_transform(ytrue_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
 
+    # 성능 평가 지표 계산
+    mae  = float(np.mean(np.abs(yhat-ytrue)))
     mse  = float(np.mean((yhat-ytrue)**2))
     rmse = float(np.sqrt(mse))
-    mae  = float(np.mean(np.abs(yhat-ytrue)))
-    print("\n=== Final Test Metrics ===")
-    print(f"MSE : {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE : {mae:.6f}")
+    
+    print("\n" + "="*60)
+    print("🎯 최종 테스트 성능 평가")
+    print("="*60)
+    print(f"MAE  (Mean Absolute Error):      {mae:.6f}")
+    print(f"MSE  (Mean Squared Error):       {mse:.6f}")
+    print(f"RMSE (Root Mean Squared Error):  {rmse:.6f}")
+    print("="*60)
 
     # =========================
     # Save per-window predictions
@@ -1163,9 +1248,19 @@ def compute_feature_importance(model,
     """
     퍼뮤테이션(열 섞기) 중요도와 평균 대체(그 특징을 평균으로 고정) 중요도를 계산.
     반환: 중요도 DataFrame (ΔMAE가 클수록 중요)
+    
+    Note: 'ili'는 타겟 변수이므로 Feature Importance 계산에서 제외됩니다.
     """
     assert scaler_y is not None and feat_names is not None
     rng = np.random.RandomState(random_state)
+
+    # --- 'ili' 제외: 타겟 변수는 feature importance 계산에서 제외 ---
+    feat_indices = [i for i, name in enumerate(feat_names) if name != 'ili']
+    filtered_feat_names = [feat_names[i] for i in feat_indices]
+    
+    if len(filtered_feat_names) < len(feat_names):
+        print(f"[FI] 'ili' 특징 제외됨 (타겟 변수)")
+        print(f"[FI] Feature Importance 계산 대상: {len(filtered_feat_names)}개 특징")
 
     # --- 기준선(baseline MAE) ---
     baseline_val = _eval_mae_on_split(model, X_va_sc, y_va_sc, scaler_y, feat_names)
@@ -1179,7 +1274,10 @@ def compute_feature_importance(model,
     perm_deltas_val, mean_deltas_val = [], []
     perm_deltas_tst, mean_deltas_tst = [], []
 
-    for j, name in enumerate(feat_names):
+    # 'ili'를 제외한 특징들에 대해서만 계산
+    for j in feat_indices:
+        name = feat_names[j]
+        
         # ① 퍼뮤테이션(열 섞기)
         Xp = X_va_sc.copy()
         col = Xp[:, j].copy()
@@ -1222,8 +1320,8 @@ def compute_feature_importance(model,
     # 역매핑: 내부명 → 한글명
     inv_colmap = {v: k for k, v in column_mapping.items()}
 
-    # feature명 + 한글명 표시
-    feature_disp = [f"{f} ({inv_colmap[f]})" if f in inv_colmap else f for f in feat_names]
+    # feature명 + 한글명 표시 ('ili' 제외된 특징들만)
+    feature_disp = [f"{f} ({inv_colmap[f]})" if f in inv_colmap else f for f in filtered_feat_names]
 
     df_fi = pd.DataFrame({
         "feature": feature_disp,
@@ -1624,16 +1722,27 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         model.load_state_dict(best_state)
     print(f"Best Val MAE: {best_val:.6f}")
 
-    # Test
-    model.eval(); te_mae_sum=0; k=0
+    # Test - 모든 성능 지표 계산
+    model.eval(); te_mae_sum=0; te_mse_sum=0; te_rmse_sum=0; k=0
     with torch.no_grad():
         for Xb,yb,_ in dl_te:
             Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
             pred=model(Xb)
             te_mae_sum += batch_mae_in_original_units(pred,yb,scaler_y)*yb.size(0)
+            te_mse_sum += batch_mse_in_original_units(pred,yb,scaler_y)*yb.size(0)
+            te_rmse_sum += batch_rmse_in_original_units(pred,yb,scaler_y)*yb.size(0)
             k+=yb.size(0)
     te_mae_avg = te_mae_sum/max(1,k)
-    print(f"Test MAE (original units): {te_mae_avg:.6f}")
+    te_mse_avg = te_mse_sum/max(1,k)
+    te_rmse_avg = te_rmse_sum/max(1,k)
+    
+    print("\n" + "="*60)
+    print("🎯 최종 테스트 성능 평가")
+    print("="*60)
+    print(f"MAE  (Mean Absolute Error):      {te_mae_avg:.6f}")
+    print(f"MSE  (Mean Squared Error):       {te_mse_avg:.6f}")
+    print(f"RMSE (Root Mean Squared Error):  {te_rmse_avg:.6f}")
+    print("="*60)
 
     # Plot curves
     plt.figure(figsize=(12,4))
