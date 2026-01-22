@@ -117,7 +117,7 @@ class Config:
     
     # ===== Optuna 최적화 설정 =====
     USE_OPTUNA = True       # Optuna 최적화 실행
-    N_TRIALS = 100          # Optuna 최적화 시도 횟수
+    N_TRIALS = 50          # Optuna 최적화 시도 횟수
     OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
     
     # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
@@ -137,7 +137,7 @@ class Config:
     
     # ===== 모델 하이퍼파라미터 (기본값) =====
     # Optuna를 사용하지 않을 때 또는 최적화 후 고정값으로 사용
-    EPOCHS = 200
+    EPOCHS = 100
     BATCH_SIZE = 64
     SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
     PRED_LEN = 3            # 예측 길이 (미래 몇 주)
@@ -1280,15 +1280,14 @@ if __name__ == "__main__":
     # =========================
 # Feature Importance utils
 # =========================
-def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
+def _eval_mse_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
                        batch_size=BATCH_SIZE):
     """
-    Feature Importance용 MAE 계산
-    → 반드시 현재 model.head 출력 차원(pred_len)을 기준으로 계산
+    Feature Importance용 MSE 계산 (Perturbation-Based Method)
     """
     model.eval()
 
-    # 🔑 실제 모델의 pred_len을 사용
+    # 실제 모델의 pred_len을 사용
     pred_len = model.head[-1].out_features
     seq_len  = SEQ_LEN
     patch_len = PATCH_LEN
@@ -1303,7 +1302,7 @@ def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
-    mae_sum, n = 0.0, 0
+    mse_sum, n = 0.0, 0
     with torch.no_grad():
         for Xb, yb, _ in dl:
             Xb = Xb.to(DEVICE)
@@ -1311,14 +1310,24 @@ def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
 
             pred = model(Xb)  # (B, H_model)
 
-            # 🔒 pred / yb shape mismatch 방지
+            # pred / yb shape mismatch 방지
             H = pred.shape[1]
             yb = yb[:, :H]
 
-            mae_sum += batch_mae_in_original_units(pred, yb, scaler_y) * yb.size(0)
+            # 원래 스케일로 변환
+            pred_np = pred.cpu().numpy()
+            yb_np = yb.cpu().numpy()
+            
+            # scaler_y가 2D 입력을 요구하면 reshape
+            pred_orig = scaler_y.inverse_transform(pred_np.reshape(-1, 1)).flatten()[:H]
+            yb_orig = scaler_y.inverse_transform(yb_np.reshape(-1, 1)).flatten()[:H]
+            
+            # MSE 계산
+            mse = np.mean((pred_orig - yb_orig) ** 2)
+            mse_sum += mse * yb.size(0)
             n += yb.size(0)
 
-    return float(mae_sum / max(1, n))
+    return float(mse_sum / max(1, n))
 
 
 def compute_feature_importance(model, 
@@ -1327,13 +1336,16 @@ def compute_feature_importance(model,
                                scaler_y=None, feat_names=None, 
                                random_state=42):
     """
-    퍼뮤테이션(열 섞기) 중요도와 평균 대체(그 특징을 평균으로 고정) 중요도를 계산.
-    반환: 중요도 DataFrame (ΔMAE가 클수록 중요)
+    Perturbation-Based Feature Importance 계산
+    
+    방법:
+    1. 각 변수를 마스킹(평균값으로 대체)
+    2. MSE 증가량 측정: Importance(i) = MSE_masked(i) - MSE_original
+    3. 중요도 정규화
     
     Note: 'ili'는 타겟 변수이므로 Feature Importance 계산에서 제외됩니다.
     """
     assert scaler_y is not None and feat_names is not None
-    rng = np.random.RandomState(random_state)
 
     # --- 'ili' 제외: 타겟 변수는 feature importance 계산에서 제외 ---
     feat_indices = [i for i, name in enumerate(feat_names) if name != 'ili']
@@ -1343,51 +1355,61 @@ def compute_feature_importance(model,
         print(f"[FI] 'ili' 특징 제외됨 (타겟 변수)")
         print(f"[FI] Feature Importance 계산 대상: {len(filtered_feat_names)}개 특징")
 
-    # --- 기준선(baseline MAE) ---
-    baseline_val = _eval_mae_on_split(model, X_va_sc, y_va_sc, scaler_y, feat_names)
-    print(f"[FI] Baseline Val MAE: {baseline_val:.6f}")
+    # --- Step 1: Baseline MSE (원본 데이터) ---
+    print(f"[FI] Computing Baseline MSE...")
+    mse_original_val = _eval_mse_on_split(model, X_va_sc, y_va_sc, scaler_y, feat_names)
+    print(f"[FI] Baseline Val MSE: {mse_original_val:.6f}")
 
-    baseline_tst = None
+    mse_original_tst = None
     if X_te_sc is not None and y_te_sc is not None:
-        baseline_tst = _eval_mae_on_split(model, X_te_sc, y_te_sc, scaler_y, feat_names)
-        print(f"[FI] Baseline Test MAE: {baseline_tst:.6f}")
+        mse_original_tst = _eval_mse_on_split(model, X_te_sc, y_te_sc, scaler_y, feat_names)
+        print(f"[FI] Baseline Test MSE: {mse_original_tst:.6f}")
 
-    perm_deltas_val, mean_deltas_val = [], []
-    perm_deltas_tst, mean_deltas_tst = [], []
+    # --- Step 2: 각 변수를 마스킹하여 MSE 증가량 측정 ---
+    print(f"[FI] Computing Perturbation Importance...")
+    importance_val = []
+    importance_tst = []
 
-    # 'ili'를 제외한 특징들에 대해서만 계산
     for j in feat_indices:
         name = feat_names[j]
         
-        # ① 퍼뮤테이션(열 섞기)
-        Xp = X_va_sc.copy()
-        col = Xp[:, j].copy()
-        rng.shuffle(col)
-        Xp[:, j] = col
-        mae_perm_val = _eval_mae_on_split(model, Xp, y_va_sc, scaler_y, feat_names)
-        perm_deltas_val.append(mae_perm_val - baseline_val)
+        # Validation set: 해당 피처를 평균값으로 마스킹
+        X_masked_val = X_va_sc.copy()
+        X_masked_val[:, j] = X_va_sc[:, j].mean()
+        
+        mse_masked_val = _eval_mse_on_split(model, X_masked_val, y_va_sc, scaler_y, feat_names)
+        delta_mse_val = mse_masked_val - mse_original_val
+        importance_val.append(delta_mse_val)
+        
+        print(f"  - {name}: ΔMSE={delta_mse_val:.6f}")
 
-        # ② 평균 대체(특징 제거 효과)
-        Xz = X_va_sc.copy()
-        Xz[:, j] = X_va_sc[:, j].mean()
-        mae_mean_val = _eval_mae_on_split(model, Xz, y_va_sc, scaler_y, feat_names)
-        mean_deltas_val.append(mae_mean_val - baseline_val)
-
+        # Test set (optional)
         if X_te_sc is not None and y_te_sc is not None:
-            Xp_te = X_te_sc.copy()
-            col_te = Xp_te[:, j].copy()
-            rng.shuffle(col_te)
-            Xp_te[:, j] = col_te
-            mae_perm_tst = _eval_mae_on_split(model, Xp_te, y_te_sc, scaler_y, feat_names)
-            perm_deltas_tst.append(mae_perm_tst - baseline_tst)
+            X_masked_tst = X_te_sc.copy()
+            X_masked_tst[:, j] = X_te_sc[:, j].mean()
+            
+            mse_masked_tst = _eval_mse_on_split(model, X_masked_tst, y_te_sc, scaler_y, feat_names)
+            delta_mse_tst = mse_masked_tst - mse_original_tst
+            importance_tst.append(delta_mse_tst)
 
-            Xz_te = X_te_sc.copy()
-            Xz_te[:, j] = X_te_sc[:, j].mean()
-            mae_mean_tst = _eval_mae_on_split(model, Xz_te, y_te_sc, scaler_y, feat_names)
-            mean_deltas_tst.append(mae_mean_tst - baseline_tst)
+    # --- Step 3: Normalization ---
+    importance_val = np.array(importance_val)
+    sum_importance_val = np.abs(importance_val).sum()
+    if sum_importance_val > 0:
+        importance_norm_val = importance_val / sum_importance_val
+    else:
+        importance_norm_val = np.zeros_like(importance_val)
 
-    # DataFrame 생성
-    # 내부명 → 한글명 매핑 (column_mapping의 value→key 역전)
+    importance_norm_tst = None
+    if importance_tst:
+        importance_tst = np.array(importance_tst)
+        sum_importance_tst = np.abs(importance_tst).sum()
+        if sum_importance_tst > 0:
+            importance_norm_tst = importance_tst / sum_importance_tst
+        else:
+            importance_norm_tst = np.zeros_like(importance_tst)
+
+    # --- DataFrame 생성 ---
     column_mapping = {
         '연도': 'year',
         '주차': 'week',
@@ -1398,28 +1420,29 @@ def compute_feature_importance(model,
         '응급실 인플루엔자 환자': 'emergency_patients',
         '아형': 'subtype'
     }
-    # 역매핑: 내부명 → 한글명
     inv_colmap = {v: k for k, v in column_mapping.items()}
 
-    # feature명 + 한글명 표시 ('ili' 제외된 특징들만)
     feature_disp = [f"{f} ({inv_colmap[f]})" if f in inv_colmap else f for f in filtered_feat_names]
 
     df_fi = pd.DataFrame({
         "feature": feature_disp,
-        "perm_delta_val": perm_deltas_val,
-        "mean_delta_val": mean_deltas_val,
+        "importance_raw_val": importance_val,
+        "importance_norm_val": importance_norm_val,
     })
-    if X_te_sc is not None and y_te_sc is not None:
-        df_fi["perm_delta_tst"] = perm_deltas_tst
-        df_fi["mean_delta_tst"] = mean_deltas_tst
+    
+    if importance_norm_tst is not None:
+        df_fi["importance_raw_tst"] = importance_tst
+        df_fi["importance_norm_tst"] = importance_norm_tst
 
-    # 평균 델타 기준 내림차순 정렬
-    df_fi = df_fi.sort_values("mean_delta_val", ascending=False).reset_index(drop=True)
+    # Raw importance 기준 내림차순 정렬
+    df_fi = df_fi.sort_values("importance_raw_val", ascending=False).reset_index(drop=True)
+    
+    print(f"\n[FI] Feature Importance Calculation Complete!")
     return df_fi
 
 def plot_feature_importance(fi_df, out_csv=None, out_png=None):
     """
-    Feature Importance를 막대그래프로 시각화
+    Perturbation-Based Feature Importance를 막대그래프로 시각화
     """
     if fi_df is None or len(fi_df) == 0:
         print("No feature importance data to plot.")
@@ -1432,19 +1455,20 @@ def plot_feature_importance(fi_df, out_csv=None, out_png=None):
         fi_df.to_csv(out_csv, index=False)
         print(f"Feature Importance saved to {out_csv}")
 
-    # 시각화
+    # 시각화 (2개 서브플롯: Raw & Normalized)
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    # ① Permutation Δ (Val)
-    axes[0].barh(fi_df["feature"], fi_df["perm_delta_val"], color="steelblue")
-    axes[0].set_xlabel("ΔMAE (Permutation, Val)")
-    axes[0].set_title("Permutation Feature Importance (Val)")
+    # ① Raw Importance (ΔMSE)
+    axes[0].barh(df_fi["feature"], df_fi["importance_raw_val"], color="steelblue")
+    axes[0].set_xlabel("ΔMSE (MSE_masked - MSE_original)")
+    axes[0].set_title("Perturbation-Based Importance (Raw)")
     axes[0].invert_yaxis()
+    axes[0].axvline(x=0, color='red', linestyle='--', linewidth=0.8)
 
-    # ② Mean Replacement Δ (Val)
-    axes[1].barh(fi_df["feature"], fi_df["mean_delta_val"], color="coral")
-    axes[1].set_xlabel("ΔMAE (Mean Replacement, Val)")
-    axes[1].set_title("Mean Replacement Feature Importance (Val)")
+    # ② Normalized Importance
+    axes[1].barh(df_fi["feature"], df_fi["importance_norm_val"], color="coral")
+    axes[1].set_xlabel("Normalized Importance")
+    axes[1].set_title("Perturbation-Based Importance (Normalized)")
     axes[1].invert_yaxis()
 
     plt.tight_layout()
