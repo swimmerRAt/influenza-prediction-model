@@ -140,7 +140,7 @@ class Config:
     EPOCHS = 200
     BATCH_SIZE = 64
     SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
-    PRED_LEN = 3            # 예측 길이 (미래 몇 주)
+    PRED_LEN = 4            # 예측 길이 (미래 몇 주) — 기본: 4주(한 달)
     PATCH_LEN = 4           # CNN 패치 길이
     STRIDE = 1              # 패치 스트라이드
     
@@ -365,10 +365,732 @@ def _norm_season_text(s: str) -> str:
     m = re.search(r"(\d{4})\s*-\s*(\d{4})", ss)
     return f"{m.group(1)}-{m.group(2)}" if m else ss.strip()
 
+
 # =========================
-# data loader (multivariate-ready)
+# 연령대 매핑 및 데이터 로드 유틸리티
 # =========================
-def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarray, np.ndarray, list, list]:
+
+# 연령대 그룹 정의 (데이터셋마다 연령대 표기가 다름)
+AGE_GROUP_MAPPING = {
+    # 표준화된 연령대 이름 -> 각 데이터셋에서 사용되는 이름들
+    '0-6세': ['0-6세', '0세', '1-6세'],  # ds_0106, ds_0108은 0-6세로 합쳐져 있음
+    '0세': ['0세'],
+    '1-6세': ['1-6세'],
+    '7-12세': ['7-12세'],
+    '13-18세': ['13-18세'],
+    '19-49세': ['19-49세'],
+    '50-64세': ['50-64세'],
+    '65세이상': ['65세이상', '65세 이상'],
+    '65-69세': ['65-69세'],
+    '70-74세': ['70-74세'],
+    '75세이상': ['75세 이상', '75세이상'],
+}
+
+# 역방향 매핑: 데이터셋의 연령대 -> 표준화된 연령대
+def normalize_age_group(age_str: str) -> str:
+    """데이터셋의 연령대 표기를 표준화"""
+    for standard, variants in AGE_GROUP_MAPPING.items():
+        if age_str in variants:
+            return standard
+    return age_str  # 매핑이 없으면 원본 반환
+
+
+# =========================
+# 데이터 소스 비교 검증 함수
+# =========================
+def validate_data_sources(
+    age_group: str = "19-49세",
+    data_dir: str = "data/before",
+    merged_csv_path: str = "merged_influenza_data.csv",
+    verbose: bool = True
+) -> dict:
+    """
+    merged_influenza_data.csv와 원본 CSV(data/before)에서 
+    동일한 방식으로 필터링한 데이터를 비교하여 일관성 검증
+    
+    Parameters:
+        age_group: 비교할 연령대
+        data_dir: 원본 CSV 디렉토리
+        merged_csv_path: 병합된 CSV 파일 경로
+        verbose: 상세 출력 여부
+    
+    Returns:
+        dict: 비교 결과 {'match': bool, 'details': {...}}
+    """
+    from pathlib import Path
+    
+    if verbose:
+        print(f"\n{'='*70}")
+        print(f"🔍 데이터 소스 비교 검증: {age_group}")
+        print(f"{'='*70}")
+    
+    results = {
+        'age_group': age_group,
+        'match': False,
+        'details': {}
+    }
+    
+    # ===== 1. merged_influenza_data.csv에서 필터링 =====
+    merged_path = Path(merged_csv_path)
+    if not merged_path.exists():
+        if verbose:
+            print(f"   ⚠️ {merged_csv_path} 파일을 찾을 수 없습니다.")
+        results['details']['merged_error'] = 'File not found'
+        return results
+    
+    try:
+        df_merged_all = pd.read_csv(merged_csv_path)
+        
+        # 연령대 변형 목록
+        age_variants = AGE_GROUP_MAPPING.get(age_group, [age_group])
+        
+        # 필터링 (merged CSV는 age_group 컬럼 사용)
+        mask = df_merged_all['age_group'].isin(age_variants)
+        df_merged = df_merged_all[mask].copy()
+        
+        # 0-6세의 경우 0세 + 1-6세 합산 필요
+        if age_group == '0-6세' and len(age_variants) > 1:
+            # year, week 기준으로 그룹화
+            df_merged = df_merged.groupby(['year', 'week'], as_index=False).agg({
+                'ili': 'mean',  # ILI는 평균
+                'detection_rate': 'mean',
+                'hospitalization': 'sum',  # 입원은 합산
+                'vaccine_rate': 'mean',
+                'emergency_patients': 'sum',  # 응급실은 합산
+            })
+            df_merged['age_group'] = age_group
+        
+        # 정렬
+        df_merged = df_merged.sort_values(['year', 'week']).reset_index(drop=True)
+        
+        if verbose:
+            print(f"\n📊 소스 1: merged_influenza_data.csv")
+            print(f"   - 필터 조건: age_group in {age_variants}")
+            print(f"   - 결과 행 수: {len(df_merged)}")
+            print(f"   - 연도 범위: {df_merged['year'].min():.0f} ~ {df_merged['year'].max():.0f}")
+            print(f"   - ILI 범위: {df_merged['ili'].min():.2f} ~ {df_merged['ili'].max():.2f}" if df_merged['ili'].notna().any() else "   - ILI: 모두 결측")
+        
+        results['details']['merged'] = {
+            'rows': len(df_merged),
+            'year_range': (int(df_merged['year'].min()), int(df_merged['year'].max())),
+            'ili_range': (float(df_merged['ili'].min()), float(df_merged['ili'].max())) if df_merged['ili'].notna().any() else None,
+            'nulls': int(df_merged.isnull().sum().sum())
+        }
+        
+    except Exception as e:
+        if verbose:
+            print(f"   ❌ merged CSV 로드 오류: {e}")
+        results['details']['merged_error'] = str(e)
+        return results
+    
+    # ===== 2. 원본 CSV(data/before)에서 필터링 =====
+    try:
+        df_raw = load_raw_data_by_age_group(data_dir=data_dir, age_group=age_group)
+        df_raw = df_raw.sort_values(['year', 'week']).reset_index(drop=True)
+        
+        if verbose:
+            print(f"\n📊 소스 2: data/before (원본 CSV)")
+            print(f"   - 함수: load_raw_data_by_age_group('{age_group}')")
+            print(f"   - 결과 행 수: {len(df_raw)}")
+            print(f"   - 연도 범위: {df_raw['year'].min():.0f} ~ {df_raw['year'].max():.0f}")
+            print(f"   - ILI 범위: {df_raw['ili'].min():.2f} ~ {df_raw['ili'].max():.2f}" if df_raw['ili'].notna().any() else "   - ILI: 모두 결측")
+        
+        results['details']['raw'] = {
+            'rows': len(df_raw),
+            'year_range': (int(df_raw['year'].min()), int(df_raw['year'].max())),
+            'ili_range': (float(df_raw['ili'].min()), float(df_raw['ili'].max())) if df_raw['ili'].notna().any() else None,
+            'nulls': int(df_raw.isnull().sum().sum())
+        }
+        
+    except Exception as e:
+        if verbose:
+            print(f"   ❌ 원본 CSV 로드 오류: {e}")
+        results['details']['raw_error'] = str(e)
+        return results
+    
+    # ===== 3. 비교 =====
+    if verbose:
+        print(f"\n📊 비교 결과:")
+    
+    # 행 수 비교
+    row_match = len(df_merged) == len(df_raw)
+    if verbose:
+        print(f"   - 행 수 일치: {'✅' if row_match else '❌'} (merged: {len(df_merged)}, raw: {len(df_raw)})")
+    
+    # ILI 값 비교 (공통 year/week 기준)
+    common_keys = set(zip(df_merged['year'], df_merged['week'])) & set(zip(df_raw['year'], df_raw['week']))
+    
+    if common_keys:
+        # 공통 키로 병합
+        df_merged_subset = df_merged[df_merged.apply(lambda r: (r['year'], r['week']) in common_keys, axis=1)].copy()
+        df_raw_subset = df_raw[df_raw.apply(lambda r: (r['year'], r['week']) in common_keys, axis=1)].copy()
+        
+        df_merged_subset = df_merged_subset.sort_values(['year', 'week']).reset_index(drop=True)
+        df_raw_subset = df_raw_subset.sort_values(['year', 'week']).reset_index(drop=True)
+        
+        # ILI 비교
+        ili_merged = df_merged_subset['ili'].fillna(0).values
+        ili_raw = df_raw_subset['ili'].fillna(0).values
+        
+        if len(ili_merged) == len(ili_raw):
+            ili_diff = np.abs(ili_merged - ili_raw)
+            ili_match = np.allclose(ili_merged, ili_raw, rtol=1e-5, atol=1e-8, equal_nan=True)
+            ili_max_diff = ili_diff.max()
+            ili_mean_diff = ili_diff.mean()
+            
+            if verbose:
+                print(f"   - ILI 값 일치: {'✅' if ili_match else '⚠️'} (최대 차이: {ili_max_diff:.6f}, 평균 차이: {ili_mean_diff:.6f})")
+            
+            results['details']['ili_comparison'] = {
+                'match': bool(ili_match),
+                'max_diff': float(ili_max_diff),
+                'mean_diff': float(ili_mean_diff)
+            }
+        else:
+            if verbose:
+                print(f"   - ILI 비교 불가: 행 수 불일치")
+            ili_match = False
+    else:
+        if verbose:
+            print(f"   - 공통 키 없음")
+        ili_match = False
+    
+    # 전체 일치 여부
+    results['match'] = row_match and (ili_match if common_keys else False)
+    
+    if verbose:
+        print(f"\n   📋 최종 결과: {'✅ 일치' if results['match'] else '⚠️ 불일치 (차이 있음)'}")
+        print(f"{'='*70}")
+    
+    return results
+
+
+def validate_all_age_groups(
+    data_dir: str = "data/before",
+    merged_csv_path: str = "merged_influenza_data.csv"
+) -> dict:
+    """
+    모든 주요 연령대에 대해 데이터 소스 비교 검증 실행
+    
+    Returns:
+        dict: 연령대별 검증 결과
+    """
+    print(f"\n{'🔬 '*20}")
+    print("모든 연령대 데이터 소스 비교 검증")
+    print(f"{'🔬 '*20}")
+    
+    age_groups = ['0-6세', '7-12세', '13-18세', '19-49세', '50-64세', '65세이상']
+    all_results = {}
+    
+    for age in age_groups:
+        result = validate_data_sources(
+            age_group=age,
+            data_dir=data_dir,
+            merged_csv_path=merged_csv_path,
+            verbose=True
+        )
+        all_results[age] = result
+    
+    # 요약
+    print(f"\n{'='*70}")
+    print("📋 전체 검증 요약")
+    print(f"{'='*70}")
+    
+    for age, result in all_results.items():
+        status = '✅' if result['match'] else '⚠️'
+        details = result.get('details', {})
+        merged_rows = details.get('merged', {}).get('rows', 'N/A')
+        raw_rows = details.get('raw', {}).get('rows', 'N/A')
+        print(f"   {status} {age}: merged={merged_rows}행, raw={raw_rows}행")
+    
+    return all_results
+
+
+def load_raw_data_by_age_group(
+    data_dir: str = "data/before",
+    age_group: str = "19-49세"
+) -> pd.DataFrame:
+    """
+    특정 연령대의 모든 데이터를 data/before 디렉토리에서 직접 로드
+    PostgreSQL을 거치지 않고 원본 CSV에서 직접 로드
+    
+    Parameters:
+        data_dir: 데이터 디렉토리 경로
+        age_group: 선택할 연령대 (예: '19-49세', '65세이상')
+    
+    Returns:
+        pd.DataFrame: 해당 연령대의 병합된 데이터
+    """
+    from pathlib import Path
+    
+    data_path = Path(data_dir)
+    
+    print(f"\n{'='*60}")
+    print(f"📂 연령대별 원본 데이터 로드: {age_group}")
+    print(f"{'='*60}")
+    
+    # 연령대 변형 목록
+    age_variants = AGE_GROUP_MAPPING.get(age_group, [age_group])
+    print(f"   - 검색할 연령대 변형: {age_variants}")
+    
+    # 데이터셋별 로드
+    # has_age: True = 연령대 필터링 필수, False = 전국 데이터 (연령대 없음)
+    # fallback_to_avg: True = 연령대 데이터 없으면 전국 평균 사용
+    datasets = {
+        'ds_0101': {'col': '의사환자 분율', 'target': 'ili', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0103': {'col': '입원환자 수', 'target': 'hospitalization_confirmed', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0104': {'col': '입원환자 수', 'target': 'hospitalization_suspected', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0106': {'col': '인플루엔자 검출률', 'target': 'detection_rate', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0108': {'col': '인플루엔자 검출률', 'target': 'detection_rate_alt', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0109': {'col': '응급실 인플루엔자 환자', 'target': 'emergency_patients', 'has_age': True, 'fallback_to_avg': False},
+        'ds_0110': {'col': '예방접종률', 'target': 'vaccine_rate', 'has_age': True, 'fallback_to_avg': True},
+    }
+    
+    all_data = {}
+    
+    for dsid, info in datasets.items():
+        ds_num = dsid.replace('ds_', '')
+        pattern = f"flu-{ds_num}-*.csv"
+        files = list(data_path.glob(pattern))
+        
+        if not files:
+            continue
+        
+        dfs = []
+        for f in sorted(files):
+            try:
+                df = pd.read_csv(f)
+                dfs.append(df)
+            except Exception as e:
+                print(f"   ⚠️ 파일 읽기 실패 ({f.name}): {e}")
+        
+        if not dfs:
+            continue
+        
+        df_combined = pd.concat(dfs, ignore_index=True)
+        
+        # 연령대 필터링
+        if info['has_age'] and '연령대' in df_combined.columns:
+            # 해당 연령대만 필터링
+            mask = df_combined['연령대'].isin(age_variants)
+            df_filtered = df_combined[mask].copy()
+            
+            # 연령대 데이터가 없고 fallback_to_avg가 True인 경우 전국 평균 사용
+            if df_filtered.empty and info.get('fallback_to_avg', False):
+                print(f"   - {dsid}: 연령대 '{age_group}' 데이터 없음 → 전국 평균 사용")
+                
+                # 컬럼 표준화
+                df_combined = df_combined.rename(columns={
+                    '연도': 'year',
+                    '주차': 'week',
+                    info['col']: info['target']
+                })
+                
+                # 수치형 변환
+                df_combined[info['target']] = pd.to_numeric(df_combined[info['target']], errors='coerce')
+                
+                # 주차별 전국 평균 계산
+                df_filtered = df_combined.groupby(['year', 'week'], as_index=False)[info['target']].mean()
+                
+                all_data[info['target']] = df_filtered
+                print(f"   - {dsid} ({info['target']}): {len(df_filtered)}행 로드 (전국 평균)")
+                continue
+            
+            if df_filtered.empty:
+                print(f"   - {dsid}: 연령대 '{age_group}' 데이터 없음")
+                continue
+            
+            # 컬럼 표준화
+            df_filtered = df_filtered.rename(columns={
+                '연도': 'year',
+                '주차': 'week',
+                '연령대': 'age_group',
+                info['col']: info['target']
+            })
+            
+            # 필요한 컬럼만 선택
+            cols = ['year', 'week', info['target']]
+            df_filtered = df_filtered[cols].copy()
+            
+            # 여러 연령대 변형이 있을 경우 (예: 0-6세 = 0세 + 1-6세) 합산
+            if len(age_variants) > 1:
+                # 수치형으로 변환
+                df_filtered[info['target']] = pd.to_numeric(df_filtered[info['target']], errors='coerce')
+                # year, week 기준으로 합산 (입원환자, 응급실) 또는 평균 (ILI, 검출률)
+                if info['target'] in ['hospitalization_confirmed', 'hospitalization_suspected', 'emergency_patients']:
+                    df_filtered = df_filtered.groupby(['year', 'week'], as_index=False)[info['target']].sum()
+                else:
+                    df_filtered = df_filtered.groupby(['year', 'week'], as_index=False)[info['target']].mean()
+            
+            all_data[info['target']] = df_filtered
+            print(f"   - {dsid} ({info['target']}): {len(df_filtered)}행 로드")
+    
+    if not all_data:
+        print(f"\n⚠️ 연령대 '{age_group}'에 해당하는 데이터가 없습니다.")
+        return pd.DataFrame()
+    
+    # 모든 데이터 병합 (year, week 기준)
+    print(f"\n📊 데이터 병합 중...")
+    
+    # 첫 번째 데이터프레임을 기준으로 시작
+    result_df = None
+    for target_name, df in all_data.items():
+        if result_df is None:
+            result_df = df.copy()
+        else:
+            # year, week 기준으로 병합
+            result_df = pd.merge(result_df, df, on=['year', 'week'], how='outer')
+    
+    # 정렬
+    result_df = result_df.sort_values(['year', 'week']).reset_index(drop=True)
+    
+    # hospitalization 합산 (확진 + 의심)
+    if 'hospitalization_confirmed' in result_df.columns or 'hospitalization_suspected' in result_df.columns:
+        confirmed = result_df.get('hospitalization_confirmed', 0).fillna(0)
+        suspected = result_df.get('hospitalization_suspected', 0).fillna(0)
+        result_df['hospitalization'] = confirmed + suspected
+        
+        # 원본 컬럼 제거
+        for col in ['hospitalization_confirmed', 'hospitalization_suspected']:
+            if col in result_df.columns:
+                result_df = result_df.drop(columns=[col])
+    
+    # detection_rate 통합 (ds_0106과 ds_0108 중 하나 선택)
+    if 'detection_rate' in result_df.columns and 'detection_rate_alt' in result_df.columns:
+        # 우선 ds_0106 사용, 없으면 ds_0108
+        result_df['detection_rate'] = result_df['detection_rate'].fillna(result_df['detection_rate_alt'])
+        result_df = result_df.drop(columns=['detection_rate_alt'])
+    elif 'detection_rate_alt' in result_df.columns:
+        result_df = result_df.rename(columns={'detection_rate_alt': 'detection_rate'})
+    
+    # 연령대 컬럼 추가
+    result_df['age_group'] = age_group
+    
+    print(f"\n✅ 연령대 '{age_group}' 데이터 로드 완료:")
+    print(f"   - 총 {len(result_df)}행")
+    print(f"   - 컬럼: {list(result_df.columns)}")
+    print(f"   - 연도 범위: {result_df['year'].min():.0f} ~ {result_df['year'].max():.0f}")
+    print(f"   - 주차 범위: {result_df['week'].min():.0f} ~ {result_df['week'].max():.0f}")
+    
+    return result_df
+
+
+def get_available_age_groups(data_dir: str = "data/before") -> dict:
+    """
+    data/before 디렉토리에서 사용 가능한 연령대 목록 조회
+    
+    Returns:
+        dict: 데이터셋별 연령대 목록
+    """
+    from pathlib import Path
+    
+    data_path = Path(data_dir)
+    result = {}
+    
+    # 주요 데이터셋 확인
+    datasets = ['0101', '0103', '0106', '0108', '0109', '0110']
+    
+    for ds in datasets:
+        pattern = f"flu-{ds}-*.csv"
+        files = list(data_path.glob(pattern))
+        
+        if not files:
+            continue
+        
+        age_groups = set()
+        for f in files:
+            try:
+                df = pd.read_csv(f)
+                if '연령대' in df.columns:
+                    age_groups.update(df['연령대'].dropna().unique())
+            except:
+                pass
+        
+        if age_groups:
+            result[f'ds_{ds}'] = sorted(list(age_groups))
+    
+    return result
+
+
+# =========================
+# 아형별 데이터 로드 함수 (ds_0107)
+# =========================
+def load_subtype_data(data_dir: str = "data/before", subtype: str = "A") -> pd.DataFrame:
+    """
+    ds_0107 데이터에서 특정 아형(A/B)의 검출률 데이터를 로드
+    
+    Parameters:
+        data_dir: 데이터 디렉토리 경로
+        subtype: 아형 ('A', 'B', 또는 'all')
+    
+    Returns:
+        pd.DataFrame: 아형별 검출률 데이터 (연도, 주차, 검출률)
+    """
+    from pathlib import Path
+    
+    data_path = Path(data_dir)
+    flu_0107_files = list(data_path.glob("flu-0107-*.csv"))
+    
+    if not flu_0107_files:
+        print(f"⚠️ ds_0107 파일을 찾을 수 없습니다: {data_dir}")
+        return pd.DataFrame()
+    
+    print(f"\n📊 아형별 검출률 데이터 로드 (ds_0107)")
+    print(f"   - 발견된 파일: {len(flu_0107_files)}개")
+    print(f"   - 선택된 아형: {subtype}")
+    
+    all_dfs = []
+    for filepath in sorted(flu_0107_files):
+        try:
+            df = pd.read_csv(filepath)
+            all_dfs.append(df)
+        except Exception as e:
+            print(f"   ⚠️ 파일 읽기 실패 ({filepath.name}): {e}")
+    
+    if not all_dfs:
+        return pd.DataFrame()
+    
+    df_combined = pd.concat(all_dfs, ignore_index=True)
+    
+    # 컬럼명 매핑
+    col_map = {
+        '연도': 'year',
+        '주차': 'week',
+        '아형': 'subtype',
+        '인플루엔자 검출률': 'detection_rate'
+    }
+    df_combined = df_combined.rename(columns=col_map)
+    
+    # '검출률' 행 제거 (전체 검출률)
+    if 'subtype' in df_combined.columns:
+        df_combined = df_combined[df_combined['subtype'] != '검출률'].copy()
+    
+    # 아형 필터링
+    if subtype.upper() != 'ALL':
+        df_combined = df_combined[df_combined['subtype'] == subtype.upper()].copy()
+    
+    # 정렬
+    df_combined = df_combined.sort_values(['year', 'week']).reset_index(drop=True)
+    
+    print(f"   - 최종 데이터: {len(df_combined)}행")
+    print(f"   - 연도 범위: {df_combined['year'].min()} ~ {df_combined['year'].max()}")
+    print(f"   - 아형별 분포: {df_combined['subtype'].value_counts().to_dict() if 'subtype' in df_combined.columns else 'N/A'}")
+    
+    return df_combined
+
+
+def prepare_subtype_data(
+    subtype: str = "A",
+    data_dir: str = "data/before"
+) -> Tuple[np.ndarray, np.ndarray, list, list]:
+    """
+    아형별(A/B) 검출률 예측을 위한 데이터 준비
+    ds_0107 데이터를 사용하여 특정 아형의 검출률 시계열 예측
+    
+    Parameters:
+        subtype: 아형 ('A' 또는 'B')
+        data_dir: 데이터 디렉토리 경로
+    
+    Returns:
+        X: (N, F) features
+        y: (N,) target (검출률)
+        labels: list[str] for plotting
+        feat_names: list[str] feature names
+    """
+    # 아형별 데이터 로드
+    df = load_subtype_data(data_dir=data_dir, subtype=subtype)
+    
+    if df.empty:
+        raise ValueError(f"아형 '{subtype}' 데이터를 찾을 수 없습니다.")
+    
+    print(f"\n📊 아형별 검출률 예측 데이터 준비")
+    print(f"   - 선택된 아형: {subtype}")
+    print(f"   - 데이터 포인트: {len(df)}개")
+    
+    # 계절성 피처 추가
+    df['week_sin'] = np.sin(2 * np.pi * df['week'] / 52)
+    df['week_cos'] = np.cos(2 * np.pi * df['week'] / 52)
+    
+    # season_norm 라벨 생성
+    df['season_norm'] = df.apply(
+        lambda row: f"{int(row['year'])}-{int(row['year'])+1}" if row['week'] >= 36 
+                   else f"{int(row['year'])-1}-{int(row['year'])}",
+        axis=1
+    )
+    
+    # 피처 구성: 검출률 + 계절성
+    feat_names = ['detection_rate', 'week_sin', 'week_cos']
+    
+    # 결측치 처리
+    df = df.dropna(subset=['detection_rate'])
+    
+    X = df[feat_names].to_numpy(dtype=float)
+    y = df['detection_rate'].to_numpy(dtype=float)
+    labels = (df['season_norm'].astype(str) + f" ({subtype}) - W" + df['week'].astype(int).astype(str)).tolist()
+    
+    print(f"\n✅ 아형별 데이터 준비 완료:")
+    print(f"   - X shape: {X.shape}")
+    print(f"   - y shape: {y.shape}")
+    print(f"   - Features: {feat_names}")
+    
+    return X, y, labels, feat_names
+
+
+# =========================
+# 연령대별 데이터 준비 (원본 CSV에서 직접 로드)
+# =========================
+def load_and_prepare_by_age(
+    age_group: str = "19-49세",
+    data_dir: str = "data/before",
+    use_exog: str = "all"
+) -> Tuple[np.ndarray, np.ndarray, list, list]:
+    """
+    특정 연령대의 원본 데이터를 직접 로드하여 모델 학습용으로 전처리
+    PostgreSQL을 거치지 않고 data/before에서 직접 로드
+    
+    Parameters:
+        age_group: 연령대 (예: '19-49세', '65세이상', '0-6세')
+        data_dir: 데이터 디렉토리 경로
+        use_exog: 외생변수 사용 모드 ('all', 'vaccine', 'resp', 'none', 'auto')
+    
+    Returns:
+        X: (N, F) features
+        y: (N,) target (ILI)
+        labels: list[str] for plotting
+        feat_names: list[str] feature names
+    """
+    # 원본 데이터 로드
+    df = load_raw_data_by_age_group(data_dir=data_dir, age_group=age_group)
+    
+    if df.empty:
+        raise ValueError(f"연령대 '{age_group}' 데이터를 찾을 수 없습니다.")
+    
+    # ILI 데이터가 있는지 확인
+    if 'ili' not in df.columns:
+        raise ValueError(f"연령대 '{age_group}'에 ILI 데이터가 없습니다.")
+    
+    print(f"\n📊 연령대별 데이터 전처리: {age_group}")
+    
+    # 정렬
+    df = df.sort_values(['year', 'week']).reset_index(drop=True)
+    
+    # ===== 팬데믹 기간 처리 =====
+    pandemic_mask = (
+        ((df['year'] == 2020) & (df['week'] >= 14)) |
+        ((df['year'] == 2021)) |
+        ((df['year'] == 2022) & (df['week'] <= 22))
+    )
+    
+    pandemic_count = pandemic_mask.sum()
+    print(f"   - 팬데믹 기간 데이터: {pandemic_count}행")
+    
+    # 팬데믹 기간 결측치 처리
+    for col in ['ili', 'hospitalization', 'detection_rate', 'emergency_patients']:
+        if col in df.columns:
+            df.loc[pandemic_mask, col] = np.nan
+    
+    # ===== 계절성 패턴 기반 보간 =====
+    if df['ili'].isna().sum() > 0:
+        print(f"   - ILI 결측치 보간 중...")
+        
+        # 팬데믹 이전 데이터로 주차별 평균 계산
+        pre_pandemic = df[(df['year'] >= 2017) & (df['year'] <= 2019) & df['ili'].notna()]
+        
+        if not pre_pandemic.empty:
+            weekly_pattern = pre_pandemic.groupby('week')['ili'].mean()
+            
+            for idx in df[df['ili'].isna()].index:
+                week = int(df.loc[idx, 'week'])
+                if week in weekly_pattern.index:
+                    df.loc[idx, 'ili'] = weekly_pattern[week]
+    
+    # 다른 컬럼도 보간
+    for col in ['hospitalization', 'detection_rate', 'emergency_patients']:
+        if col in df.columns and df[col].isna().sum() > 0:
+            pre_pandemic = df[(df['year'] >= 2017) & (df['year'] <= 2019) & df[col].notna()]
+            if not pre_pandemic.empty:
+                weekly_pattern = pre_pandemic.groupby('week')[col].mean()
+                for idx in df[df[col].isna()].index:
+                    week = int(df.loc[idx, 'week'])
+                    if week in weekly_pattern.index:
+                        df.loc[idx, col] = weekly_pattern[week]
+    
+    # ===== 계절성 피처 추가 =====
+    df['week_sin'] = np.sin(2 * np.pi * df['week'] / 52)
+    df['week_cos'] = np.cos(2 * np.pi * df['week'] / 52)
+    
+    # season_norm 라벨 생성
+    df['season_norm'] = df.apply(
+        lambda row: f"{int(row['year'])}-{int(row['year'])+1}" if row['week'] >= 36 
+                   else f"{int(row['year'])-1}-{int(row['year'])}",
+        axis=1
+    )
+    
+    # ===== 피처 선택 =====
+    # 기본 피처: ILI (타겟)
+    chosen = ['ili']
+    
+    # 외생변수 설정
+    has_hosp = 'hospitalization' in df.columns and df['hospitalization'].notna().any()
+    has_detection = 'detection_rate' in df.columns and df['detection_rate'].notna().any()
+    has_emergency = 'emergency_patients' in df.columns and df['emergency_patients'].notna().any()
+    has_vaccine = 'vaccine_rate' in df.columns and df['vaccine_rate'].notna().any()
+    
+    if use_exog in ('all', 'auto'):
+        if has_hosp:
+            chosen.append('hospitalization')
+        if has_detection:
+            chosen.append('detection_rate')
+        if has_emergency:
+            chosen.append('emergency_patients')
+        if has_vaccine:
+            chosen.append('vaccine_rate')
+    elif use_exog == 'vaccine' and has_vaccine:
+        chosen.append('vaccine_rate')
+    elif use_exog == 'resp':
+        if has_hosp:
+            chosen.append('hospitalization')
+        if has_detection:
+            chosen.append('detection_rate')
+    
+    # 계절성 피처 추가
+    if INCLUDE_SEASONAL_FEATS:
+        chosen.extend(['week_sin', 'week_cos'])
+    
+    print(f"   - 선택된 피처: {chosen}")
+    
+    # 결측치 처리
+    for col in chosen:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+    
+    # ILI가 없는 행 제거
+    df = df[df['ili'].notna()].copy()
+    
+    # X, y 구성
+    feat_names = chosen[:]
+    X = df[feat_names].to_numpy(dtype=float)
+    y = df['ili'].to_numpy(dtype=float)
+    labels = (df['season_norm'].astype(str) + f" ({age_group}) - W" + df['week'].astype(int).astype(str)).tolist()
+    
+    print(f"\n✅ 연령대 '{age_group}' 데이터 준비 완료:")
+    print(f"   - X shape: {X.shape}")
+    print(f"   - y shape: {y.shape}")
+    print(f"   - Features: {feat_names}")
+    print(f"   - ILI 범위: [{y.min():.2f}, {y.max():.2f}]")
+    
+    return X, y, labels, feat_names
+
+
+# =========================
+# data loader (multivariate-ready) - PostgreSQL 버전
+# =========================
+def load_and_prepare(
+    df: pd.DataFrame, 
+    use_exog: str = "auto",
+    age_group: Optional[str] = None,
+    subtype: Optional[str] = None
+) -> Tuple[np.ndarray, np.ndarray, list, list]:
     """
     PostgreSQL 또는 CSV 데이터를 PatchTST 모델 학습용으로 전처리
     
@@ -381,6 +1103,8 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     Parameters:
         df: PostgreSQL 또는 API에서 가져온 DataFrame
         use_exog: 외생변수 사용 모드
+        age_group: 특정 연령대 선택 (예: '19-49세', '65세이상', None이면 자동 선택)
+        subtype: 아형 필터링 ('A', 'B', None이면 우세 아형 사용)
     """
     if df is None:
         raise ValueError("df는 반드시 제공되어야 합니다. 먼저 데이터를 로드하세요.")
@@ -416,6 +1140,7 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         
         # 팬데믹 기간의 ILI 값을 NaN으로 설정 (결측치 표시)
         # 나중에 연령대별로 처리한 후 보간할 것임
+        import numpy as np
         df.loc[pandemic_mask, 'ili'] = np.nan
         
         # 다른 수치형 컬럼도 팬데믹 기간 동안 NaN 처리
@@ -432,19 +1157,31 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         print(f"\n   - 고유 연령대: {len(age_groups)}개")
         print(f"   - 연령대 목록: {sorted(age_groups)[:5]}...")
         
-        # 여러 연령대 중 데이터가 가장 풍부한 연령대 선택
-        # 우선순위: 19-49세 (가장 일반적) > 65세이상 > 65세 이상 > 전체 평균
-        candidate_age_groups = ['19-49세', '65세이상', '65세 이상', '0-6세']
+        # 연령대 선택: 파라미터로 지정된 경우 우선 사용
         target_age_group = None
         
-        for candidate in candidate_age_groups:
-            if candidate in age_groups:
-                # 해당 연령대의 데이터 품질 확인
-                temp_df = df[df['age_group'] == candidate].copy()
-                valid_ili = temp_df['ili'].notna().sum()
-                if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
-                    target_age_group = candidate
-                    break
+        if age_group is not None:
+            # 사용자 지정 연령대
+            if age_group in age_groups:
+                target_age_group = age_group
+                print(f"   - 사용자 지정 연령대 사용: '{age_group}'")
+            else:
+                print(f"   ⚠️ 지정된 연령대 '{age_group}'를 찾을 수 없습니다.")
+                print(f"   ℹ️ 사용 가능한 연령대: {sorted(age_groups)}")
+        
+        if target_age_group is None:
+            # 자동 선택: 데이터가 가장 풍부한 연령대
+            # 우선순위: 19-49세 (가장 일반적) > 65세이상 > 65세 이상 > 0-6세
+            candidate_age_groups = ['19-49세', '65세이상', '65세 이상', '0-6세']
+            
+            for candidate in candidate_age_groups:
+                if candidate in age_groups:
+                    # 해당 연령대의 데이터 품질 확인
+                    temp_df = df[df['age_group'] == candidate].copy()
+                    valid_ili = temp_df['ili'].notna().sum()
+                    if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
+                        target_age_group = candidate
+                        break
         
         if target_age_group and target_age_group in age_groups:
             print(f"   - '{target_age_group}' 연령대 데이터 사용")
@@ -571,14 +1308,17 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     # 주 단위 -> 일 단위 보간 (선택사항)
     # df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
     
-    # 정렬 확인
+    # ⚠️  정렬: year, week만 사용 (season_norm 정렬 제거)
+    # season_norm 기준 정렬은 시간 순서를 파괴함 (week 1이 week 36보다 앞으로 감)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values("date").reset_index(drop=True)
-    elif {"season_norm", "week"}.issubset(df.columns):
-        df["season_norm"] = df["season_norm"].astype(str).map(_norm_season_text)
+    elif {"year", "week"}.issubset(df.columns):
+        # year, week만 사용하여 시간 순서 유지
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
         df["week"] = pd.to_numeric(df["week"], errors="coerce")
-        df = df.sort_values(["season_norm", "week"]).reset_index(drop=True)
+        df = df.sort_values(["year", "week"]).reset_index(drop=True)
+        print(f"   - 정렬: year, week 기준 (시간 순서 유지)")
     elif "label" in df.columns:
         df = df.sort_values(["label"]).reset_index(drop=True)
 
@@ -1259,45 +1999,6 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
 
 
 # =========================
-# run
-# =========================
-if __name__ == "__main__":
-    print("\n" + "🚀 " * 30)
-    print("데이터 로드 및 모델 학습 시작!")
-    print("🚀 " * 30 + "\n")
-    
-    print("=" * 60)
-    print("💾 PostgreSQL 모드: 데이터베이스에서 데이터 로드")
-    print("=" * 60)
-    
-    # PostgreSQL에서 데이터 로드
-    df = load_data_from_postgres()
-    
-    print("\n" + "✅ " * 30)
-    print("데이터 로드 완료!")
-    print("✅ " * 30 + "\n")
-    
-    # 데이터 확인
-    print(f"📊 DataFrame 정보:")
-    print(f"   - Shape: {df.shape}")
-    print(f"   - Columns: {list(df.columns)}")
-    print(f"\n처음 5개 행:")
-    print(df.head())
-    print(f"\n데이터 타입:")
-    print(df.dtypes)
-    
-    print(f"\n🔧 USE_EXOG = '{USE_EXOG}'  (auto-detects vaccine/resp columns)")
-    
-    # DataFrame을 직접 전달하여 전처리
-    print("\n📈 데이터 전처리 및 특징 추출 중...")
-    X, y, labels, feat_names = load_and_prepare(df=df, use_exog=USE_EXOG)
-    print(f"✅ 전처리 완료!")
-    print(f"   - Data points: {len(y)}")
-    print(f"   - Features used ({len(feat_names)}): {feat_names}")
-    
-    # 모델 학습 및 평가 (baseline 학습은 삭제됨; Optuna 이후 최종 학습만 실행)
-
-    # =========================
 # Feature Importance utils
 # =========================
 def _eval_mse_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
@@ -1531,19 +2232,32 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
         search_space = Config.OPTUNA_SEARCH_SPACE
         
         # 하이퍼파라미터 샘플링
-        params = {
-            'd_model': trial.suggest_categorical('d_model', search_space['d_model']),
-            'n_heads': trial.suggest_categorical('n_heads', search_space['n_heads']),
-            'enc_layers': trial.suggest_int('enc_layers', *search_space['enc_layers']),
-            'ff_dim': trial.suggest_categorical('ff_dim', search_space['ff_dim']),
-            'dropout': trial.suggest_float('dropout', *search_space['dropout']),
-            'lr': trial.suggest_float('lr', *search_space['lr'], log=True),
-            'weight_decay': trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True),
-            'batch_size': trial.suggest_categorical('batch_size', search_space['batch_size']),
-            'seq_len': trial.suggest_categorical('seq_len', search_space['seq_len']),
-            'pred_len': trial.suggest_categorical('pred_len', search_space['pred_len']),
-            'patch_len': trial.suggest_categorical('patch_len', search_space['patch_len']),
-        }
+        # 하이퍼파라미터 샘플링: search_space에 키가 없으면 Config의 기본값 사용
+        params = {}
+        params['d_model'] = trial.suggest_categorical('d_model', search_space['d_model'])
+        params['n_heads'] = trial.suggest_categorical('n_heads', search_space['n_heads'])
+        params['enc_layers'] = trial.suggest_int('enc_layers', *search_space['enc_layers'])
+        params['ff_dim'] = trial.suggest_categorical('ff_dim', search_space['ff_dim'])
+        params['dropout'] = trial.suggest_float('dropout', *search_space['dropout'])
+        params['lr'] = trial.suggest_float('lr', *search_space['lr'], log=True)
+        params['weight_decay'] = trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True)
+        params['batch_size'] = trial.suggest_categorical('batch_size', search_space['batch_size'])
+
+        # seq_len / pred_len / patch_len: search_space에 없을 수 있으므로 안전하게 처리
+        if 'seq_len' in search_space:
+            params['seq_len'] = trial.suggest_categorical('seq_len', search_space['seq_len'])
+        else:
+            params['seq_len'] = SEQ_LEN
+
+        if 'pred_len' in search_space:
+            params['pred_len'] = trial.suggest_categorical('pred_len', search_space['pred_len'])
+        else:
+            params['pred_len'] = PRED_LEN
+
+        if 'patch_len' in search_space:
+            params['patch_len'] = trial.suggest_categorical('patch_len', search_space['patch_len'])
+        else:
+            params['patch_len'] = PATCH_LEN
         
         # d_model은 4의 배수여야 함 (MultiScaleCNN 분기 4개)
         if params['d_model'] % 4 != 0:
@@ -2019,6 +2733,208 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
 # 실행부 (결과 출력)
 # =========================
 if __name__ == "__main__":
+    import argparse
+    
+    # 환경변수에서 기본값 로드
+    env_age_group = os.getenv('AGE_GROUP', '').strip() or None
+    env_subtype = os.getenv('SUBTYPE', '').strip() or None
+    env_subtype_only = os.getenv('SUBTYPE_ONLY', 'false').lower() == 'true'
+    env_raw_data = os.getenv('USE_RAW_DATA', 'false').lower() == 'true'
+    env_data_dir = os.getenv('DATA_DIR', 'data/before')
+    
+    parser = argparse.ArgumentParser(
+        description='PatchTST 인플루엔자 예측 모델',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+환경변수 설정 (.env 파일):
+  AGE_GROUP      연령대 (예: 19-49세, 65세이상)
+  SUBTYPE        아형 (A 또는 B)
+  SUBTYPE_ONLY   아형별 예측 모드 (true/false)
+  USE_RAW_DATA   원본 CSV 사용 (true/false)
+  DATA_DIR       원본 데이터 디렉토리
+
+명령줄 인자가 환경변수보다 우선합니다.
+""")
+    parser.add_argument('--age-group', type=str, default=env_age_group,
+                        help=f'연령대 선택 (예: 19-49세, 65세이상, 0-6세). 환경변수: AGE_GROUP={env_age_group}')
+    parser.add_argument('--subtype', type=str, default=env_subtype,
+                        help=f'아형 선택 (A, B). 환경변수: SUBTYPE={env_subtype}')
+    parser.add_argument('--subtype-only', action='store_true', default=env_subtype_only,
+                        help=f'아형별 검출률만 예측 (ds_0107 데이터 사용). 환경변수: SUBTYPE_ONLY={env_subtype_only}')
+    parser.add_argument('--raw-data', action='store_true', default=env_raw_data,
+                        help=f'원본 CSV 데이터에서 직접 로드. 환경변수: USE_RAW_DATA={env_raw_data}')
+    parser.add_argument('--data-dir', type=str, default=env_data_dir,
+                        help=f'원본 데이터 디렉토리. 환경변수: DATA_DIR={env_data_dir}')
+    parser.add_argument('--list-options', action='store_true',
+                        help='사용 가능한 연령대와 아형 목록 출력')
+    args = parser.parse_args()
+    
+    # 현재 설정 출력
+    print("\n" + "=" * 60)
+    print("📋 현재 모델 설정")
+    print("=" * 60)
+    print(f"   연령대 (AGE_GROUP): {args.age_group or '전체 (미지정)'} {'[env]' if args.age_group == env_age_group and env_age_group else ''}")
+    print(f"   아형 (SUBTYPE): {args.subtype or '우세 아형 자동 선택'} {'[env]' if args.subtype == env_subtype and env_subtype else ''}")
+    print(f"   아형 전용 모드 (SUBTYPE_ONLY): {args.subtype_only} {'[env]' if args.subtype_only == env_subtype_only else ''}")
+    print(f"   원본 데이터 사용 (USE_RAW_DATA): {args.raw_data} {'[env]' if args.raw_data == env_raw_data else ''}")
+    print(f"   데이터 디렉토리 (DATA_DIR): {args.data_dir} {'[env]' if args.data_dir == env_data_dir else ''}")
+    print("=" * 60)
+    
+    # --list-options 옵션: 사용 가능한 옵션 출력 후 종료
+    if args.list_options:
+        print("\n📋 사용 가능한 옵션:")
+        
+        # 원본 데이터에서 연령대 목록 조회
+        age_info = get_available_age_groups(args.data_dir)
+        
+        print(f"\n📂 원본 데이터 연령대 (--raw-data 모드):")
+        for dsid, ages in age_info.items():
+            print(f"   {dsid}: {ages}")
+        
+        # 공통 연령대 찾기
+        if age_info:
+            common_ages = set(age_info.get('ds_0101', []))
+            for ages in age_info.values():
+                common_ages &= set(ages)
+            print(f"\n📊 공통 연령대 (모든 데이터셋에서 사용 가능):")
+            for ag in sorted(common_ages):
+                print(f"   - {ag}")
+        
+        print(f"\n아형 (--subtype-only --subtype <A|B>):")
+        print(f"   - A: 인플루엔자 A형")
+        print(f"   - B: 인플루엔자 B형")
+        
+        # ds_0107 아형별 데이터 미리보기
+        df_subtype = load_subtype_data(subtype='all')
+        if not df_subtype.empty:
+            print(f"\n아형별 검출률 데이터 (ds_0107):")
+            for st in df_subtype['subtype'].unique():
+                count = len(df_subtype[df_subtype['subtype'] == st])
+                print(f"   - {st}: {count}개 레코드")
+        
+        exit(0)
+    
+    print("\n" + "🚀 " * 20)
+    print("데이터 로드 및 모델 학습 시작!")
+    print("🚀 " * 20 + "\n")
+    
+    # 아형별 검출률만 예측하는 모드 (ds_0107)
+    if args.subtype_only:
+        if not args.subtype:
+            print("⚠️ --subtype-only 옵션 사용 시 --subtype (A 또는 B)를 지정해야 합니다.")
+            exit(1)
+        
+        print("=" * 60)
+        print(f"🧬 아형별 검출률 예측 모드: {args.subtype}형")
+        print("=" * 60)
+        
+        # 아형별 데이터 준비
+        X, y, labels, feat_names = prepare_subtype_data(subtype=args.subtype, data_dir=args.data_dir)
+        
+        print(f"\n📊 아형 {args.subtype} 검출률 데이터:")
+        print(f"   - Data points: {len(y)}")
+        print(f"   - Features: {feat_names}")
+        
+        # 모델 학습 및 평가
+        best_params = None
+        if USE_OPTUNA and OPTUNA_AVAILABLE:
+            best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+        
+        model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
+            X, y, labels, feat_names,
+            compute_fi=True,
+            save_fi=True,
+            optuna_params=best_params
+        )
+        
+        print(f"\n=== 아형 {args.subtype} 검출률 예측 결과 ===")
+        print(f"Feature 개수: {len(feat_names)}")
+        exit(0)
+    
+    # ===== 연령대별 원본 데이터 모드 =====
+    if args.raw_data or args.age_group:
+        # 연령대 지정 안 했으면 기본값 사용
+        age_group = args.age_group or '19-49세'
+        
+        print("=" * 60)
+        print(f"📂 원본 데이터 모드: 연령대 '{age_group}' 데이터 로드")
+        print("=" * 60)
+        
+        # 원본 데이터에서 직접 로드 및 전처리
+        X, y, labels, feat_names = load_and_prepare_by_age(
+            age_group=age_group,
+            data_dir=args.data_dir,
+            use_exog=USE_EXOG
+        )
+        
+        print(f"\n✅ 전처리 완료!")
+        print(f"   - Data points: {len(y)}")
+        print(f"   - Features used ({len(feat_names)}): {feat_names}")
+        
+        best_params = None
+        
+        # Optuna 최적화 실행
+        if USE_OPTUNA:
+            if not OPTUNA_AVAILABLE:
+                print("\n⚠️ Optuna가 설치되지 않았습니다.")
+                print("   설치 명령: pip install optuna")
+                print("   기본 하이퍼파라미터로 학습을 진행합니다.\n")
+            else:
+                best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+        
+        # 최종 학습 실행
+        model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
+            X, y, labels, feat_names,
+            compute_fi=True,
+            save_fi=True,
+            optuna_params=best_params
+        )
+
+        print(f"\n=== [결과 요약: 연령대 '{age_group}'] ===")
+        print(f"Feature 개수: {len(feat_names)}")
+        if fi_df is not None:
+            print("\n[Top 10 Feature Importance]")
+            print(fi_df.head(10).to_string(index=False))
+        else:
+            print("Feature Importance 계산이 수행되지 않았습니다.")
+        
+        exit(0)
+    
+    # ===== PostgreSQL 모드 (기본) =====
+    print("=" * 60)
+    print("💾 PostgreSQL 모드: 데이터베이스에서 데이터 로드")
+    print("=" * 60)
+    
+    # PostgreSQL에서 데이터 로드
+    df = load_data_from_postgres()
+    
+    print("\n" + "✅ " * 30)
+    print("데이터 로드 완료!")
+    print("✅ " * 30 + "\n")
+    
+    # 데이터 확인
+    print(f"\n📊 DataFrame 정보:")
+    print(f"   - Shape: {df.shape}")
+    print(f"   - Columns: {list(df.columns)}")
+    print(f"\n처음 5개 행:")
+    print(df.head())
+    print(f"\n데이터 타입:")
+    print(df.dtypes)
+    
+    print(f"\n🔧 USE_EXOG = '{USE_EXOG}'  (auto-detects vaccine/resp columns)")
+    
+    # DataFrame을 직접 전달하여 전처리
+    print("\n📈 데이터 전처리 및 특징 추출 중...")
+    X, y, labels, feat_names = load_and_prepare(
+        df=df, 
+        use_exog=USE_EXOG,
+        age_group=args.age_group,
+        subtype=args.subtype
+    )
+    print(f"✅ 전처리 완료!")
+    print(f"   - Data points: {len(y)}")
+    print(f"   - Features used ({len(feat_names)}): {feat_names}")
+    
     best_params = None
     
     # Optuna 최적화 실행

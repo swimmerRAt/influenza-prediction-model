@@ -1,0 +1,65 @@
+{
+  "csv_path": "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/merged_influenza_data.csv",
+  "csv_shape": [
+    4983,
+    9
+  ],
+  "postgres_available": true,
+  "parsed_shape": [
+    436,
+    12
+  ],
+  "X_shape": [
+    436,
+    3
+  ],
+  "y_shape": [
+    436
+  ],
+  "row_count_change": -4547,
+  "csv_columns": [
+    "year",
+    "week",
+    "age_group",
+    "ili",
+    "detection_rate",
+    "hospitalization",
+    "vaccine_rate",
+    "emergency_patients",
+    "subtype"
+  ],
+  "parsed_columns": [
+    "year",
+    "week",
+    "age_group",
+    "ili",
+    "detection_rate",
+    "hospitalization",
+    "vaccine_rate",
+    "emergency_patients",
+    "subtype",
+    "season_norm",
+    "week_sin",
+    "week_cos"
+  ],
+  "selected_features": [
+    "ili",
+    "detection_rate",
+    "week_sin"
+  ],
+  "postgres_shape": [
+    4983,
+    9
+  ],
+  "postgres_columns": [
+    "year",
+    "week",
+    "age_group",
+    "ili",
+    "detection_rate",
+    "hospitalization",
+    "vaccine_rate",
+    "emergency_patients",
+    "subtype"
+  ]
+}

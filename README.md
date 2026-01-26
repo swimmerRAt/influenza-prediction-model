@@ -9,7 +9,7 @@
 
 **최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 반영
 **실행:** python patchTST.py (서버 실행 불필요, 자동 종료)
-**출력:** 예측 결과, 피처 중요도, 시각화 등 주요 파일 자동 생성/재생성
+**출력:** 예측 결과, 피처 중요도, 시각화 등 주요 파일 자동 생성/재생성 (4주 예측)
 **주기성 피처:** week_sin, week_cos 자동 생성 및 활용
 **주요 로그:** Best Val MAE, Test MAE 등 성능지표 자동 출력
 **⚠️ 팬데믹 기간 제외:** 2020년 14주~2022년 22주 데이터는 학습에서 자동 제외
@@ -251,8 +251,8 @@ python database/validate_database.py
 
 ```python
 # 시퀀스 설정
-SEQ_LEN = 12        # 입력 시퀀스 길이 (12주)
-PRED_LEN = 3        # 예측 길이 (3주)
+   SEQ_LEN = 12        # 입력 시퀀스 길이 (12주)
+   PRED_LEN = 4        # 예측 길이 (4주 — 한 달)
 PATCH_LEN = 4       # 패치 크기
 STRIDE = 1          # 패치 간 간격
 
@@ -286,8 +286,8 @@ Positional Encoding
 Transformer Encoder (4 layers)
     ↓
 Flatten & MLP
-    ↓
-출력 (3주 예측)
+   ↓
+출력 (4주 예측)
 ```
 
 ### 손실 함수
@@ -538,8 +538,8 @@ class PatchTSTDataset:
         # 입력 시퀀스 (12주)
         seq_X = self.X[i:i+self.seq_len, :]  # (12, F)
         
-        # 타겟 (3주)
-        seq_y = self.y[i+self.seq_len:i+self.seq_len+self.pred_len]  # (3,)
+      # 타겟 (4주)
+      seq_y = self.y[i+self.seq_len:i+self.seq_len+self.pred_len]  # (4,)
         
         # 패치 분할 (12 → 3 patches × 4 timesteps)
         patches = []
@@ -556,11 +556,11 @@ class PatchTSTDataset:
               ↓
 시퀀스 1: 
   입력: [Week 1-12]  (12주)
-  타겟: [Week 13-15] (3주)
+   타겟: [Week 13-16] (4주)
   
 시퀀스 2:
   입력: [Week 2-13]  (12주)
-  타겟: [Week 14-16] (3주)
+   타겟: [Week 14-17] (4주)
   
 ... (슬라이딩 윈도우)
 ```
@@ -595,7 +595,7 @@ class PatchTSTDataset:
    - Train/Val/Test 분할
    ↓
 🔢 [전처리 4: 시퀀스 생성]
-   - 12주 입력 → 3주 예측
+   - 12주 입력 → 4주 예측
    - 패치 분할 (4 timesteps)
    ↓
 🤖 [모델 학습]
@@ -700,37 +700,66 @@ python database/check_database.py
 
 ### 3. PatchTST 모델 학습
 
-**모델은 DuckDB에서 데이터를 자동으로 로드하고 전처리합니다:**
+**모델은 PostgreSQL에서 데이터를 자동으로 로드하고 전처리합니다:**
 
 ```bash
-# 기본 학습 (DuckDB 사용)
+# 기본 학습 (PostgreSQL 사용, 전체 데이터)
 python patchTST.py
+
+# 사용 가능한 연령대/아형 확인
+python patchTST.py --list-options
+
+# 특정 연령대로 학습 (원본 CSV 사용)
+python patchTST.py --age-group 19-49세 --raw-data
+
+# 특정 아형으로 학습
+python patchTST.py --subtype A --raw-data
+
+# 아형별 검출률 예측 모드 (ds_0107 데이터만 사용)
+python patchTST.py --subtype-only --subtype A
 ```
 
+**명령줄 옵션:**
+| 옵션 | 설명 | 예시 |
+|------|------|------|
+| `--age-group` | 연령대 선택 | `--age-group 65세이상` |
+| `--subtype` | 아형 선택 (A/B) | `--subtype A` |
+| `--subtype-only` | 아형별 검출률만 예측 | `--subtype-only --subtype B` |
+| `--raw-data` | 원본 CSV 사용 | `--raw-data` |
+| `--data-dir` | 원본 데이터 디렉토리 | `--data-dir data/before` |
+| `--list-options` | 사용 가능한 옵션 확인 | `--list-options` |
+
 **데이터 파이프라인 (자동 처리)**:
-1. **PostgreSQL 로드**: 4,983행 × 9열 데이터
-2. **팬데믹 기간 제외**: 2020년 14주 ~ 2022년 22주 자동 필터링
-3. **연령대 선택**: 19-49세 (가장 일반적인 연령대 자동 선택)
-4. **컬럼 매핑**: 한국어 → 영어
+1. **데이터 로드**: 
+   - PostgreSQL (기본): 4,983행 × 9열 데이터
+   - 로컬 아카이브 (`--raw-data`): `data/before` 폴더에 저장된 과거 API로 수집한 CSV를 사용합니다. 이 데이터를 PostgreSQL 데이터와 병합해 시계열을 확장하거나, PostgreSQL 접근이 불가능한 경우 대체 데이터로 사용할 수 있습니다.
+2. **연령대 선택**: 환경변수 `AGE_GROUP` 또는 `--age-group` 옵션으로 지정
+   - 0-6세, 7-12세, 13-18세, 19-49세, 50-64세, 65세이상
+   - 미지정 시 전체 데이터 사용
+3. **아형 선택**: 환경변수 `SUBTYPE` 또는 `--subtype` 옵션으로 지정
+   - A, B (미지정 시 우세 아형 자동 선택)
+4. **팬데믹 기간 제외**: 2020년 14주 ~ 2022년 22주 자동 필터링
+5. **컨럼 매핑**: 한국어 → 영어
    - `연도` → `year`, `주차` → `week`
    - `의사환자 분율` → `ili` (target variable)
    - `예방접종률` → `vaccine_rate`
-   - `입원환자 수` → `hospitalization` / `respiratory_index`
+   - `입원환자 수` → `hospitalization`
    - `인플루엔자 검출률` → `detection_rate`
-5. **예방접종률 보강**: 연령대별 데이터 없으면 전체 평균 사용
-6. **결측치 처리**: 선형 보간 + median 채우기
-7. **시즌 정규화**: `season_norm` 생성 (week 36 기준)
+   - `응급실 인플루엔자 환자` → `emergency_patients`
+6. **예방접종률 Fallback**: 연령대별 데이터 없으면 전국 평균 사용
+7. **결측치 처리**: 선형 보간 + median 채우기
 8. **주기성 특징**: `week_sin`, `week_cos` 추가
 9. **모델 학습**: PatchTST Transformer 학습 (100 에포크)
 10. **예측 및 평가**: Test set에서 성능 평가
 11. **Feature Importance**: 특징 중요도 계산
 12. **자동 종료**: 모든 결과 저장 후 프로그램 자동 종료
 
-**최종 특징 벡터** (6차원):
+**최종 특징 벡터** (7차원):
 - `ili`: 의사환자 분율 (타겟)
-- `vaccine_rate`: 예방접종률
-- `respiratory_index`: 입원환자 수
+- `hospitalization`: 입원환자 수
 - `detection_rate`: 인플루엔자 검출률
+- `emergency_patients`: 응급실 인플루엔자 환자
+- `vaccine_rate`: 예방접종률 (연령대별 또는 전국 평균)
 - `week_sin`, `week_cos`: 주기성 특징
 
 **학습 시간**: 약 5~10분 (MPS/GPU 사용 시)
@@ -776,11 +805,49 @@ date,actual,predicted,residual
 ## 🔧 환경 변수 (.env)
 
 ```bash
-# DuckDB 사용 설정
-USE_DUCKDB=true
+# ========================================
+# 모델 설정
+# ========================================
+# 연령대 선택: 0-6세, 7-12세, 13-18세, 19-49세, 50-64세, 65세이상
+# 비워두면 전체 데이터 사용 (기본값)
+AGE_GROUP=
 
-# Python 경로
-PYTHONPATH=/Volumes/ExternalSSD/Workspace/influenza-prediction-model
+# 아형 선택: A, B
+# 비워두면 우세 아형 자동 선택 (기본값)
+SUBTYPE=
+
+# 아형별 예측 모드: true/false
+# true시 ds_0107 데이터만 사용
+SUBTYPE_ONLY=false
+
+# 원본 CSV 데이터 사용 여부: true/false
+# true시 PostgreSQL 대신 data/before 폴더의 CSV 직접 사용
+USE_RAW_DATA=false
+
+# 원본 데이터 디렉토리
+DATA_DIR=data/before
+
+# ========================================
+# 데이터베이스 설정 (PostgreSQL)
+# ========================================
+PG_HOST=localhost
+PG_PORT=5432
+PG_DB=influenza
+PG_USER=postgres
+PG_PASSWORD=postgres
+```
+
+### 환경변수 vs 명령줄 인자
+
+명령줄 인자가 환경변수보다 우선합니다.
+
+```bash
+# 환경변수로 설정 (.env 파일)
+AGE_GROUP=19-49세
+USE_RAW_DATA=true
+
+# 또는 명령줄로 설정 (환경변수 무시)
+python patchTST.py --age-group 65세이상 --raw-data
 ```
 
 ## 📚 추가 문서
@@ -809,4 +876,4 @@ PYTHONPATH=/Volumes/ExternalSSD/Workspace/influenza-prediction-model
 ---
 
 **개발 환경**: macOS, M-series chip  
-**마지막 업데이트**: 2026년 1월 12일
+**마지막 업데이트**: 2026년 1월 26일

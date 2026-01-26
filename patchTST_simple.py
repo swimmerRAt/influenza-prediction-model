@@ -131,7 +131,6 @@ class Config:
         'weight_decay': (1e-6, 1e-2),                 # Weight decay (범위 확장, log scale)
         'batch_size': [16, 32, 48, 64, 96, 128],      # Batch size (더 세밀한 값 추가)
         'seq_len': (8, 30),       # Input sequence length (세밀화)
-        'pred_len': [1, 2, 3, 4, 5],                  # Prediction horizon (세밀화)
         'patch_len': [2, 3, 4, 5, 6],                 # Patch length (범위 확장)
     }
     
@@ -140,7 +139,7 @@ class Config:
     EPOCHS = 200
     BATCH_SIZE = 64
     SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
-    PRED_LEN = 3            # 예측 길이 (미래 몇 주)
+    PRED_LEN = 4            # 예측 길이 (미래 몇 주) — 기본: 4주(한 달)
     PATCH_LEN = 4           # CNN 패치 길이
     STRIDE = 1              # 패치 스트라이드
     
@@ -416,6 +415,7 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
         
         # 팬데믹 기간의 ILI 값을 NaN으로 설정 (결측치 표시)
         # 나중에 연령대별로 처리한 후 보간할 것임
+        import numpy as np
         df.loc[pandemic_mask, 'ili'] = np.nan
         
         # 다른 수치형 컬럼도 팬데믹 기간 동안 NaN 처리
@@ -571,14 +571,17 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     # 주 단위 -> 일 단위 보간 (선택사항)
     # df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
     
-    # 정렬 확인
+    # ⚠️  정렬: year, week만 사용 (season_norm 정렬 제거)
+    # season_norm 기준 정렬은 시간 순서를 파괴함 (week 1이 week 36보다 앞으로 감)
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values("date").reset_index(drop=True)
-    elif {"season_norm", "week"}.issubset(df.columns):
-        df["season_norm"] = df["season_norm"].astype(str).map(_norm_season_text)
+    elif {"year", "week"}.issubset(df.columns):
+        # year, week만 사용하여 시간 순서 유지
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
         df["week"] = pd.to_numeric(df["week"], errors="coerce")
-        df = df.sort_values(["season_norm", "week"]).reset_index(drop=True)
+        df = df.sort_values(["year", "week"]).reset_index(drop=True)
+        print(f"   - 정렬: year, week 기준 (시간 순서 유지)")
     elif "label" in df.columns:
         df = df.sort_values(["label"]).reset_index(drop=True)
 
@@ -660,6 +663,50 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     print(f"   - X shape: {X.shape}")
     print(f"   - y shape: {y.shape}")
     print(f"   - Features: {len(feat_names)}")
+    
+    # 🔍 Feature 상관관계 분석 (마이너스 importance 원인 진단)
+    print(f"\n{'='*60}")
+    print("🔍 FEATURE CORRELATION & REDUNDANCY ANALYSIS")
+    print(f"{'='*60}")
+    
+    # Pearson 상관계수 계산
+    import numpy as np
+    corr_matrix = np.corrcoef(X.T)
+    print("\n📊 Correlation Matrix:")
+    print(f"{'':>15}", end='')
+    for name in feat_names:
+        print(f"{name:>15}", end='')
+    print()
+    for i, name in enumerate(feat_names):
+        print(f"{name:>15}", end='')
+        for j in range(len(feat_names)):
+            print(f"{corr_matrix[i, j]:>15.4f}", end='')
+        print()
+    
+    # 각 피처의 통계량
+    print(f"\n📈 Feature Statistics:")
+    print(f"{'Feature':>15} {'Mean':>12} {'Std':>12} {'Min':>12} {'Max':>12} {'CV':>12}")
+    print("-" * 80)
+    for i, name in enumerate(feat_names):
+        mean_val = X[:, i].mean()
+        std_val = X[:, i].std()
+        min_val = X[:, i].min()
+        max_val = X[:, i].max()
+        cv = std_val / mean_val if mean_val != 0 else 0  # Coefficient of Variation
+        print(f"{name:>15} {mean_val:>12.4f} {std_val:>12.4f} {min_val:>12.4f} {max_val:>12.4f} {cv:>12.4f}")
+    
+    # 높은 상관관계 감지 (|r| > 0.7)
+    print(f"\n⚠️  High Correlations (|r| > 0.7):")
+    found_high_corr = False
+    for i in range(len(feat_names)):
+        for j in range(i+1, len(feat_names)):
+            if abs(corr_matrix[i, j]) > 0.7:
+                print(f"   - {feat_names[i]} ↔ {feat_names[j]}: r = {corr_matrix[i, j]:.4f}")
+                found_high_corr = True
+    if not found_high_corr:
+        print("   (None found)")
+    
+    print(f"{'='*60}\n")
     
     return X, y, labels, feat_names
 
@@ -1399,6 +1446,38 @@ def compute_feature_importance(model,
         else:
             importance_norm_tst = np.zeros_like(importance_tst)
 
+    # --- 마이너스 Importance 분석 ---
+    print(f"\n{'='*60}")
+    print("🔍 NEGATIVE IMPORTANCE ANALYSIS")
+    print(f"{'='*60}")
+    n_negative = (importance_val < 0).sum()
+    n_total = len(importance_val)
+    print(f"📊 Negative Importance: {n_negative}/{n_total} ({n_negative/n_total*100:.1f}%)")
+    
+    if n_negative == n_total:
+        print(f"\n⚠️  모든 피처가 마이너스 importance!")
+        print(f"\n📌 해석:")
+        print(f"   • 마이너스 = 피처를 제거하면 성능이 '좋아진다'")
+        print(f"   • 가능한 원인:")
+        print(f"      1. 피처 간 높은 상관관계 (Redundancy)")
+        print(f"         → 한 피처를 제거해도 다른 피처로 정보 복원 가능")
+        print(f"      2. 피처 개수 대비 데이터 부족 (Overfitting)")
+        print(f"         → 3개 피처도 436 샘플에 과적합")
+        print(f"      3. 피처가 노이즈 학습")
+        print(f"         → 피처가 실제로는 예측에 방해")
+        print(f"\n💡 권장 조치:")
+        print(f"   • 피처 상관관계 확인 (위 Correlation Matrix 참고)")
+        print(f"   • 더 단순한 모델 시도 (예: 단변량 ili만 사용)")
+        print(f"   • 정규화 강화 (dropout, weight_decay 증가)")
+    elif n_negative > 0:
+        print(f"\n⚠️  일부 피처가 마이너스 importance:")
+        for i, (name, imp) in enumerate(zip(filtered_feat_names, importance_val)):
+            if imp < 0:
+                print(f"   - {name}: {imp:.6f} (제거 시 MSE {abs(imp):.6f} 감소)")
+    else:
+        print(f"\n✅ 모든 피처가 양수 importance (정상)")
+    print(f"{'='*60}\n")
+
     # --- DataFrame 생성 ---
     column_mapping = {
         '연도': 'year',
@@ -1500,20 +1579,32 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
         # Config에서 탐색 공간 가져오기
         search_space = Config.OPTUNA_SEARCH_SPACE
         
-        # 하이퍼파라미터 샘플링
-        params = {
-            'd_model': trial.suggest_categorical('d_model', search_space['d_model']),
-            'n_heads': trial.suggest_categorical('n_heads', search_space['n_heads']),
-            'enc_layers': trial.suggest_int('enc_layers', *search_space['enc_layers']),
-            'ff_dim': trial.suggest_categorical('ff_dim', search_space['ff_dim']),
-            'dropout': trial.suggest_float('dropout', *search_space['dropout']),
-            'lr': trial.suggest_float('lr', *search_space['lr'], log=True),
-            'weight_decay': trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True),
-            'batch_size': trial.suggest_categorical('batch_size', search_space['batch_size']),
-            'seq_len': trial.suggest_categorical('seq_len', search_space['seq_len']),
-            'pred_len': trial.suggest_categorical('pred_len', search_space['pred_len']),
-            'patch_len': trial.suggest_categorical('patch_len', search_space['patch_len']),
-        }
+        # 하이퍼파라미터 샘플링: search_space에 키가 없으면 Config 기본값 사용
+        params = {}
+        params['d_model'] = trial.suggest_categorical('d_model', search_space['d_model'])
+        params['n_heads'] = trial.suggest_categorical('n_heads', search_space['n_heads'])
+        params['enc_layers'] = trial.suggest_int('enc_layers', *search_space['enc_layers'])
+        params['ff_dim'] = trial.suggest_categorical('ff_dim', search_space['ff_dim'])
+        params['dropout'] = trial.suggest_float('dropout', *search_space['dropout'])
+        params['lr'] = trial.suggest_float('lr', *search_space['lr'], log=True)
+        params['weight_decay'] = trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True)
+        params['batch_size'] = trial.suggest_categorical('batch_size', search_space['batch_size'])
+
+        # seq_len / pred_len / patch_len: search_space에 없을 수 있으므로 안전하게 처리
+        if 'seq_len' in search_space:
+            params['seq_len'] = trial.suggest_categorical('seq_len', search_space['seq_len'])
+        else:
+            params['seq_len'] = SEQ_LEN
+
+        if 'pred_len' in search_space:
+            params['pred_len'] = trial.suggest_categorical('pred_len', search_space['pred_len'])
+        else:
+            params['pred_len'] = PRED_LEN
+
+        if 'patch_len' in search_space:
+            params['patch_len'] = trial.suggest_categorical('patch_len', search_space['patch_len'])
+        else:
+            params['patch_len'] = PATCH_LEN
         
         # d_model은 4의 배수여야 함 (MultiScaleCNN 분기 4개)
         if params['d_model'] % 4 != 0:
