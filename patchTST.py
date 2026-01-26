@@ -131,7 +131,7 @@ class Config:
         'weight_decay': (1e-6, 1e-2),                 # Weight decay (범위 확장, log scale)
         'batch_size': [16, 32, 48, 64, 96, 128],      # Batch size (더 세밀한 값 추가)
         'seq_len': (8, 30),       # Input sequence length (세밀화)
-        'pred_len': [1, 2, 3, 4, 5],                  # Prediction horizon (세밀화)
+        # pred_len은 Config.PRED_LEN 사용 (Optuna에서 제외)
         'patch_len': [2, 3, 4, 5, 6],                 # Patch length (범위 확장)
     }
     
@@ -448,17 +448,24 @@ def validate_data_sources(
         mask = df_merged_all['age_group'].isin(age_variants)
         df_merged = df_merged_all[mask].copy()
         
-        # 0-6세의 경우 0세 + 1-6세 합산 필요
-        if age_group == '0-6세' and len(age_variants) > 1:
-            # year, week 기준으로 그룹화
-            df_merged = df_merged.groupby(['year', 'week'], as_index=False).agg({
-                'ili': 'mean',  # ILI는 평균
-                'detection_rate': 'mean',
-                'hospitalization': 'sum',  # 입원은 합산
-                'vaccine_rate': 'mean',
-                'emergency_patients': 'sum',  # 응급실은 합산
-            })
-            df_merged['age_group'] = age_group
+        # 여러 변형이 있는 연령대는 year, week 기준으로 그룹화 필요
+        # 0-6세: 0세 + 1-6세, 65세이상: 65세이상 + 65세 이상 등
+        if len(age_variants) > 1 and len(df_merged) > 0:
+            # 중복 (year, week) 조합이 있는지 확인
+            dup_count = df_merged.duplicated(subset=['year', 'week'], keep=False).sum()
+            if dup_count > 0:
+                # year, week 기준으로 그룹화
+                agg_dict = {}
+                for col in df_merged.columns:
+                    if col in ['year', 'week', 'age_group', 'subtype']:
+                        continue  # 그룹화/문자열 컬럼 제외
+                    elif col in ['hospitalization', 'emergency_patients']:
+                        agg_dict[col] = 'sum'  # 입원/응급실은 합산
+                    elif df_merged[col].dtype in ['float64', 'int64']:
+                        agg_dict[col] = 'mean'  # 숫자형만 평균
+                
+                df_merged = df_merged.groupby(['year', 'week'], as_index=False).agg(agg_dict)
+                df_merged['age_group'] = age_group
         
         # 정렬
         df_merged = df_merged.sort_values(['year', 'week']).reset_index(drop=True)
@@ -2767,6 +2774,10 @@ if __name__ == "__main__":
                         help=f'원본 데이터 디렉토리. 환경변수: DATA_DIR={env_data_dir}')
     parser.add_argument('--list-options', action='store_true',
                         help='사용 가능한 연령대와 아형 목록 출력')
+    parser.add_argument('--validate-data', action='store_true',
+                        help='merged CSV와 원본 데이터 필터링 결과 비교 검증 (특정 연령대 또는 전체)')
+    parser.add_argument('--validate-all', action='store_true',
+                        help='모든 주요 연령대에 대해 데이터 소스 비교 검증 (--validate-data와 함께 사용)')
     args = parser.parse_args()
     
     # 현재 설정 출력
@@ -2779,6 +2790,31 @@ if __name__ == "__main__":
     print(f"   원본 데이터 사용 (USE_RAW_DATA): {args.raw_data} {'[env]' if args.raw_data == env_raw_data else ''}")
     print(f"   데이터 디렉토리 (DATA_DIR): {args.data_dir} {'[env]' if args.data_dir == env_data_dir else ''}")
     print("=" * 60)
+    
+    # --validate-data 옵션: 데이터 소스 비교 검증 후 종료
+    if args.validate_data:
+        print("\n🔍 데이터 소스 비교 검증 모드")
+        if args.validate_all:
+            # 모든 연령대 검증
+            validate_all_age_groups(
+                data_dir=args.data_dir,
+                merged_csv_path="merged_influenza_data.csv"
+            )
+        elif args.age_group:
+            # 특정 연령대만 검증
+            validate_data_sources(
+                age_group=args.age_group,
+                data_dir=args.data_dir,
+                merged_csv_path="merged_influenza_data.csv",
+                verbose=True
+            )
+        else:
+            # 환경변수에 연령대가 없으면 모든 연령대 검증
+            validate_all_age_groups(
+                data_dir=args.data_dir,
+                merged_csv_path="merged_influenza_data.csv"
+            )
+        exit(0)
     
     # --list-options 옵션: 사용 가능한 옵션 출력 후 종료
     if args.list_options:
