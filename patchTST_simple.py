@@ -117,7 +117,7 @@ class Config:
     
     # ===== Optuna 최적화 설정 =====
     USE_OPTUNA = True       # Optuna 최적화 실행
-    N_TRIALS = 50          # Optuna 최적화 시도 횟수
+    N_TRIALS = 100          # Optuna 최적화 시도 횟수
     OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
     
     # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
@@ -137,7 +137,7 @@ class Config:
     
     # ===== 모델 하이퍼파라미터 (기본값) =====
     # Optuna를 사용하지 않을 때 또는 최적화 후 고정값으로 사용
-    EPOCHS = 100
+    EPOCHS = 200
     BATCH_SIZE = 64
     SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
     PRED_LEN = 3            # 예측 길이 (미래 몇 주)
@@ -617,29 +617,13 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     has_resp = "respiratory_index" in df.columns or "hospitalization" in df.columns
 
 
-    # 모든 column_mapping 내부명을 feature로 강제 포함
-    column_mapping = {
-        '연도': 'year',
-        '주차': 'week',
-        '의사환자 분율': 'ili',
-        '예방접종률': 'vaccine_rate',
-        '입원환자 수': 'hospitalization',
-        '인플루엔자 검출률': 'detection_rate',
-        '응급실 인플루엔자 환자': 'emergency_patients',
-        '아형': 'subtype'
-    }
-    # week는 week_sin/week_cos로 대체, 나머지는 그대로
-    chosen = []
-    for v in column_mapping.values():
-        if v == "week":
-            chosen += ["week_sin", "week_cos"]
-        else:
-            chosen.append(v)
-    # 중복 제거 및 순서 보존
-    chosen = [x for i, x in enumerate(chosen) if x not in chosen[:i]]
-
-    # 숫자화 & 보간
-    for c in chosen:
+    # 🎯 사용할 feature만 선택: detection_rate, week_sin, ili
+    selected_features = ['ili', 'detection_rate', 'week_sin']
+    
+    print(f"\n🎯 선택된 Features: {selected_features}")
+    
+    # 선택된 컬럼들만 숫자화 & 보간
+    for c in selected_features:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
             if df[c].isna().any():
@@ -663,14 +647,11 @@ def load_and_prepare(df: pd.DataFrame, use_exog: str = "auto") -> Tuple[np.ndarr
     else:
         labels = [f"idx_{i}" for i in range(len(df))]
 
-    # X, y 구성
-    feat_names = chosen[:]
-    if INCLUDE_SEASONAL_FEATS and {"week_sin", "week_cos"}.issubset(df.columns):
-        feat_names += ["week_sin", "week_cos"]
+    # X, y 구성 - 선택된 features만 사용
+    feat_names = selected_features[:]
 
     # 선택된 입력 피처 로그
-    print(f"\n[Data] Exogenous detected -> vaccine_rate: {has_vax} | respiratory/hospitalization: {has_resp} | climate_feats: {climate_feats}")
-    print(f"[Data] Selected feature columns (order) -> {feat_names}")
+    print(f"\n[Data] Selected feature columns (order) -> {feat_names}")
 
     X = df[feat_names].to_numpy(dtype=float)
     y = df["ili"].to_numpy(dtype=float)
@@ -956,6 +937,15 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     X_tr, X_va, X_te = X[s0:e0], X[s1:e1], X[s2:e2]
     y_tr, y_va, y_te = y[s0:e0], y[s1:e1], y[s2:e2]
     lab_tr, lab_va, lab_te = labels[s0:e0], labels[s1:e1], labels[s2:e2]
+
+    # ==== 데이터 분할 진단 ====
+    print(f"\n📊 데이터 분할 정보:")
+    print(f"   Train: {lab_tr[0]} ~ {lab_tr[-1]} ({len(y_tr)}개)")
+    print(f"   Val:   {lab_va[0]} ~ {lab_va[-1]} ({len(y_va)}개)")
+    print(f"   Test:  {lab_te[0]} ~ {lab_te[-1]} ({len(y_te)}개)")
+    print(f"   Train y 범위: [{y_tr.min():.2f}, {y_tr.max():.2f}], 평균: {y_tr.mean():.2f}")
+    print(f"   Val   y 범위: [{y_va.min():.2f}, {y_va.max():.2f}], 평균: {y_va.mean():.2f}")
+    print(f"   Test  y 범위: [{y_te.min():.2f}, {y_te.max():.2f}], 평균: {y_te.mean():.2f}")
 
     # ==== Scaling ====
     # Target scaler
@@ -1459,14 +1449,14 @@ def plot_feature_importance(fi_df, out_csv=None, out_png=None):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # ① Raw Importance (ΔMSE)
-    axes[0].barh(df_fi["feature"], df_fi["importance_raw_val"], color="steelblue")
+    axes[0].barh(fi_df["feature"], fi_df["importance_raw_val"], color="steelblue")
     axes[0].set_xlabel("ΔMSE (MSE_masked - MSE_original)")
     axes[0].set_title("Perturbation-Based Importance (Raw)")
     axes[0].invert_yaxis()
     axes[0].axvline(x=0, color='red', linestyle='--', linewidth=0.8)
 
     # ② Normalized Importance
-    axes[1].barh(df_fi["feature"], df_fi["importance_norm_val"], color="coral")
+    axes[1].barh(fi_df["feature"], fi_df["importance_norm_val"], color="coral")
     axes[1].set_xlabel("Normalized Importance")
     axes[1].set_title("Perturbation-Based Importance (Normalized)")
     axes[1].invert_yaxis()
