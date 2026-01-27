@@ -158,16 +158,31 @@ class Config:
     PATIENCE = 60           # Early stopping patience
     WARMUP_EPOCHS = 30      # Learning rate warmup epochs
     
+    # ===== Loss 함수 설정 =====
+    PEAK_THRESHOLD_QUANTILE = 0.75  # 피크 기준 (상위 25% - 유행 진입 구간부터 가중)
+    PEAK_WEIGHT_ALPHA = 8.0         # 피크 구간 가중치 (4.0 → 8.0으로 상향)
+    AMPLITUDE_WEIGHT_BETA = 0.3     # 진폭 보존 항 가중치
+    
+    # Horizon Weighting (예측 구간별 가중치)
+    HORIZON_WEIGHT_MODE = "exponential"  # "exponential", "tail_boost", "uniform"
+    HORIZON_EXP_SCALE = 1.2              # exponential 모드 스케일
+    HORIZON_TAIL_BOOST = 2.5             # tail_boost 모드: 뒤쪽 가중치 배수
+    HORIZON_TAIL_COUNT = 2               # tail_boost 모드: 뒤쪽 몇 개
+    
     # ===== 데이터 설정 =====
     TRAIN_RATIO = 0.7       # Train 데이터 비율
     VAL_RATIO = 0.15        # Validation 데이터 비율 (Test = 1 - TRAIN - VAL)
     SCALER_TYPE = "robust"  # Scaler 타입: "standard", "robust", "minmax"
     
+    # Log 변환 설정 (피크 예측 향상)
+    USE_LOG_TRANSFORM = True  # 타겟 변수에 log(1+x) 변환 적용
+    LOG_EPSILON = 1.0         # log(x + epsilon)의 epsilon 값
+    
     # 외생 특징 사용 모드
     # "auto": 자동 감지, "none": 사용 안함, "vax": 백신률만, 
     # "resp": 호흡기지수만, "both": 둘 다, "all": 모든 특징
     USE_EXOG = "all"
-    INCLUDE_SEASONAL_FEATS = True  # week_sin, week_cos 포함 여부
+    INCLUDE_SEASONAL_FEATS = True  # week_sin 포함 여부
     
     # ===== 출력 설정 =====
     OUT_CSV = str(BASE_DIR / "ili_predictions.csv")
@@ -353,11 +368,60 @@ def make_splits(n: int, train_ratio=None, val_ratio=None):
     n_val   = int(n * val_ratio)
     return (0, n_train), (n_train, n_train+n_val), (n_train+n_val, n)
 
-def get_scaler(name=None):
-    s = (name or SCALER_TYPE).lower()
-    if s == "robust":  return RobustScaler()
-    if s == "minmax":  return MinMaxScaler()
-    return StandardScaler()
+class LogTransformScaler:
+    """
+    Log 변환을 적용하는 Scaler
+    피크 예측 향상을 위해 log(1+x) 변환 후 스케일링
+    """
+    def __init__(self, base_scaler=None, epsilon=1.0):
+        self.base_scaler = base_scaler or RobustScaler()
+        self.epsilon = epsilon  # log(x + epsilon)
+        
+    def fit(self, X):
+        # Log 변환 후 scaler fit
+        X_log = np.log(X + self.epsilon)
+        self.base_scaler.fit(X_log)
+        return self
+    
+    def transform(self, X):
+        # Log 변환 후 scaler transform
+        X_log = np.log(X + self.epsilon)
+        return self.base_scaler.transform(X_log)
+    
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+    
+    def inverse_transform(self, X_scaled):
+        # scaler inverse 후 exp 변환
+        X_log = self.base_scaler.inverse_transform(X_scaled)
+        return np.exp(X_log) - self.epsilon
+
+
+def get_scaler(name=None, for_target=False):
+    """
+    Scaler 생성 함수
+    
+    Args:
+        name: scaler 타입 ("robust", "minmax", "standard")
+        for_target: True이면 타겟 변수용 (Log 변환 적용 가능), False이면 피처용
+    """
+    s = (name or Config.SCALER_TYPE).lower()
+    
+    # Log 변환은 타겟 변수에만 적용
+    if for_target and Config.USE_LOG_TRANSFORM:
+        # Log 변환 + 기본 scaler
+        if s == "robust":
+            base = RobustScaler()
+        elif s == "minmax":
+            base = MinMaxScaler()
+        else:
+            base = StandardScaler()
+        return LogTransformScaler(base_scaler=base, epsilon=Config.LOG_EPSILON)
+    else:
+        # 기존 scaler (피처 또는 Log 변환 미사용)
+        if s == "robust":  return RobustScaler()
+        if s == "minmax":  return MinMaxScaler()
+        return StandardScaler()
 
 def _norm_season_text(s: str) -> str:
     ss = str(s).replace("절기", "")
@@ -916,7 +980,6 @@ def prepare_subtype_data(
     
     # 계절성 피처 추가
     df['week_sin'] = np.sin(2 * np.pi * df['week'] / 52)
-    df['week_cos'] = np.cos(2 * np.pi * df['week'] / 52)
     
     # season_norm 라벨 생성
     df['season_norm'] = df.apply(
@@ -926,7 +989,7 @@ def prepare_subtype_data(
     )
     
     # 피처 구성: 검출률 + 계절성
-    feat_names = ['detection_rate', 'week_sin', 'week_cos']
+    feat_names = ['detection_rate', 'week_sin']
     
     # 결측치 처리
     df = df.dropna(subset=['detection_rate'])
@@ -1024,7 +1087,6 @@ def load_and_prepare_by_age(
     
     # ===== 계절성 피처 추가 =====
     df['week_sin'] = np.sin(2 * np.pi * df['week'] / 52)
-    df['week_cos'] = np.cos(2 * np.pi * df['week'] / 52)
     
     # season_norm 라벨 생성
     df['season_norm'] = df.apply(
@@ -1062,7 +1124,7 @@ def load_and_prepare_by_age(
     
     # 계절성 피처 추가
     if INCLUDE_SEASONAL_FEATS:
-        chosen.extend(['week_sin', 'week_cos'])
+        chosen.append('week_sin')
     
     print(f"   - 선택된 피처: {chosen}")
     
@@ -1341,10 +1403,8 @@ def load_and_prepare(
     # --- Seasonality feature 추가 ---
     if "week" in df.columns:
         df["week_sin"] = np.sin(2 * np.pi * df["week"] / 52.0)
-        df["week_cos"] = np.cos(2 * np.pi * df["week"] / 52.0)
     else:
         df["week_sin"] = 0.0
-        df["week_cos"] = 0.0
 
     # --- Alias 매핑 ---
     if "hospitalization" in df.columns and "respiratory_index" not in df.columns:
@@ -1375,11 +1435,11 @@ def load_and_prepare(
         '응급실 인플루엔자 환자': 'emergency_patients',
         '아형': 'subtype'
     }
-    # week는 week_sin/week_cos로 대체, 나머지는 그대로
+    # week는 week_sin으로 대체, 나머지는 그대로
     chosen = []
     for v in column_mapping.values():
         if v == "week":
-            chosen += ["week_sin", "week_cos"]
+            chosen.append("week_sin")
         else:
             chosen.append(v)
     # 중복 제거 및 순서 보존
@@ -1412,8 +1472,8 @@ def load_and_prepare(
 
     # X, y 구성
     feat_names = chosen[:]
-    if INCLUDE_SEASONAL_FEATS and {"week_sin", "week_cos"}.issubset(df.columns):
-        feat_names += ["week_sin", "week_cos"]
+    if INCLUDE_SEASONAL_FEATS and "week_sin" in df.columns:
+        feat_names.append("week_sin")
 
     # 선택된 입력 피처 로그
     print(f"\n[Data] Exogenous detected -> vaccine_rate: {has_vax} | respiratory/hospitalization: {has_resp} | climate_feats: {climate_feats}")
@@ -1439,6 +1499,88 @@ def load_and_prepare(
     print(f"   - Features: {len(feat_names)}")
     
     return X, y, labels, feat_names
+
+# =========================
+# Loss Function
+# =========================
+class PeakAwareLoss(nn.Module):
+    """
+    고정 기준 Peak + 진폭 보존 + Horizon Weighting Loss
+    
+    특징:
+    1. Peak 구간(상위 quantile)에 높은 가중치 적용
+    2. 진폭 보존 항으로 peak flattening 방지
+    3. Horizon weighting: 예측 구간별 가중치 (피크가 주로 나타나는 후반부 강조)
+    4. MAE 기반으로 outlier에 robust
+    """
+    def __init__(self, peak_quantile=0.9, alpha=4.0, beta=0.3, 
+                 pred_len=4, horizon_mode="exponential", 
+                 horizon_exp_scale=1.2, horizon_tail_boost=2.5, horizon_tail_count=2):
+        super().__init__()
+        self.peak_quantile = peak_quantile
+        self.alpha = alpha  # 피크 가중치
+        self.beta = beta    # 진폭 보존 가중치
+        self.mae = nn.L1Loss(reduction="none")
+        
+        # 🔴 Horizon Weighting 계산
+        h_weights = self._compute_horizon_weights(
+            pred_len, horizon_mode, horizon_exp_scale, 
+            horizon_tail_boost, horizon_tail_count
+        )
+        # tensor로 변환하여 등록 (학습되지 않는 버퍼)
+        self.register_buffer('horizon_weights', torch.from_numpy(h_weights).float())
+        
+        print(f"[Loss] Horizon weights ({horizon_mode}): {h_weights}")
+    
+    def _compute_horizon_weights(self, pred_len, mode, exp_scale, tail_boost, tail_count):
+        """예측 구간별 가중치 계산"""
+        if mode == "exponential":
+            # 지수적으로 증가 (뒤로 갈수록 가중치 증가)
+            h_weights = np.exp(np.linspace(0, exp_scale, pred_len))
+        elif mode == "tail_boost":
+            # 뒤쪽 N개만 부스트
+            h_weights = np.ones(pred_len)
+            h_weights[-tail_count:] *= tail_boost
+        else:  # uniform
+            h_weights = np.ones(pred_len)
+        
+        # 정규화 (합이 pred_len이 되도록)
+        h_weights = h_weights / h_weights.sum() * pred_len
+        return h_weights
+    
+    def forward(self, pred, target):
+        """
+        Args:
+            pred: (B, H) 예측값
+            target: (B, H) 실제값
+        Returns:
+            loss: scalar
+        """
+        # Base MAE
+        base_loss = self.mae(pred, target)  # (B, H)
+        
+        # 🔴 피크 구간 가중 (배치별 동적 threshold)
+        with torch.no_grad():
+            peak_threshold = torch.quantile(target, self.peak_quantile)
+            peak_mask = target >= peak_threshold
+            weights = torch.ones_like(target)
+            weights[peak_mask] = self.alpha
+        
+        # 🔴 Horizon weighting 적용
+        # horizon_weights: (H,) -> (1, H)로 브로드캐스트
+        horizon_w = self.horizon_weights.view(1, -1)  # (1, H)
+        weighted_mae = (base_loss * weights * horizon_w).mean()
+        
+        # 🔴 진폭 보존 항 (peak flattening 방지)
+        # 각 배치 시퀀스의 최대값 차이를 패널티로 추가
+        pred_max = pred.max(dim=1).values    # (B,)
+        target_max = target.max(dim=1).values  # (B,)
+        amp_loss = torch.abs(pred_max - target_max).mean()
+        
+        # 총 손실
+        total_loss = weighted_mae + self.beta * amp_loss
+        
+        return total_loss
 
 # =========================
 # dataset
@@ -1578,13 +1720,17 @@ class PatchTSTModel(nn.Module):
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
         self.pool = AttnPool(d_model)
 
-        # ④ 예측 헤드
-        mlp, in_dim = [], d_model
+        # ④ Dual-head 예측: Trend + Peak
+        # head_hidden: MLP layers for feature extraction
+        mlp_shared, in_dim = [], d_model
         for h in head_hidden[:2]:
-            mlp += [nn.Linear(in_dim, h), nn.GELU(), nn.Dropout(dropout)]
+            mlp_shared += [nn.Linear(in_dim, h), nn.GELU(), nn.Dropout(dropout)]
             in_dim = h
-        mlp.append(nn.Linear(in_dim, pred_len))
-        self.head = nn.Sequential(*mlp)
+        self.shared_mlp = nn.Sequential(*mlp_shared) if mlp_shared else nn.Identity()
+        
+        # Dual heads
+        self.head_trend = nn.Linear(in_dim, pred_len)  # 기본 트렌드
+        self.head_peak = nn.Linear(in_dim, pred_len)   # 피크 보정 (양수만)
 
     def forward(self, x):
         # x: (B, P, L, F)
@@ -1593,7 +1739,15 @@ class PatchTSTModel(nn.Module):
         z = self.posenc(z)
         z = self.encoder(z)
         z = self.pool(z)       # (B,D)
-        return self.head(z)    # (B,H)
+        
+        # Shared MLP
+        z = self.shared_mlp(z)  # (B, hidden_dim)
+        
+        # Dual-head prediction
+        trend = self.head_trend(z)         # (B, H) - 기본 곡선
+        peak = torch.relu(self.head_peak(z))  # (B, H) - 피크 보정 (양수만, "더 위로만")
+        
+        return trend + peak    # (B,H) - 최종 예측
 
     def correlation_loss(pred, true):
     # pred, true: (B, H)
@@ -1725,14 +1879,14 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     print(f"   Test  y 범위: [{y_te.min():.2f}, {y_te.max():.2f}], 평균: {y_te.mean():.2f}")
 
     # ==== Scaling ====
-    # Target scaler
-    scaler_y = get_scaler()
+    # Target scaler (타겟: Log 변환 적용)
+    scaler_y = get_scaler(for_target=True)
     y_tr_sc = scaler_y.fit_transform(y_tr.reshape(-1,1)).ravel()
     y_va_sc = scaler_y.transform(y_va.reshape(-1,1)).ravel()
     y_te_sc = scaler_y.transform(y_te.reshape(-1,1)).ravel()
 
-    # Feature scaler (입력 특징 전체)
-    scaler_x = get_scaler()
+    # Feature scaler (피처: Log 변환 미적용)
+    scaler_x = get_scaler(for_target=False)
     X_tr_sc = scaler_x.fit_transform(X_tr)
     X_va_sc = scaler_x.transform(X_va)
     X_te_sc = scaler_x.transform(X_te)
@@ -1757,19 +1911,17 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     ).to(DEVICE)
 
     # Loss / Optim / Scheduler
-    def peak_weighted_loss(pred, target, peak_quantile=0.9, alpha=3.0):
-        """
-        Peak-aware weighted MAE/Huber-style loss.
-        pred, target: (B, H)
-        """
-        with torch.no_grad():
-            # 기준: 배치 내 target 상위 quantile
-            thresh = torch.quantile(target, peak_quantile)
-            weights = torch.ones_like(target)
-            weights[target >= thresh] = alpha
-        return torch.mean(weights * torch.abs(pred - target))
-
-    crit = peak_weighted_loss
+    crit = PeakAwareLoss(
+        peak_quantile=Config.PEAK_THRESHOLD_QUANTILE,
+        alpha=Config.PEAK_WEIGHT_ALPHA,
+        beta=Config.AMPLITUDE_WEIGHT_BETA,
+        pred_len=PRED_LEN,
+        horizon_mode=Config.HORIZON_WEIGHT_MODE,
+        horizon_exp_scale=Config.HORIZON_EXP_SCALE,
+        horizon_tail_boost=Config.HORIZON_TAIL_BOOST,
+        horizon_tail_count=Config.HORIZON_TAIL_COUNT
+    ).to(DEVICE)
+    
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
 
@@ -2015,8 +2167,8 @@ def _eval_mse_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
     """
     model.eval()
 
-    # 실제 모델의 pred_len을 사용
-    pred_len = model.head[-1].out_features
+    # 실제 모델의 pred_len을 사용 (Dual-head 구조에서 head_trend 사용)
+    pred_len = model.head_trend.out_features
     seq_len  = SEQ_LEN
     patch_len = PATCH_LEN
     stride = STRIDE
@@ -2282,12 +2434,12 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
         X_tr, X_va = X[s0:e0], X[s1:e1]
         y_tr, y_va = y[s0:e0], y[s1:e1]
         
-        # Scaling
-        scaler_y = get_scaler()
+        # Scaling (타겟: Log 변환 적용, 피처: Log 변환 미적용)
+        scaler_y = get_scaler(for_target=True)
         y_tr_sc = scaler_y.fit_transform(y_tr.reshape(-1,1)).ravel()
         y_va_sc = scaler_y.transform(y_va.reshape(-1,1)).ravel()
         
-        scaler_x = get_scaler()
+        scaler_x = get_scaler(for_target=False)
         X_tr_sc = scaler_x.fit_transform(X_tr)
         X_va_sc = scaler_x.transform(X_va)
         
@@ -2350,6 +2502,10 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
             va_loss_sum = 0
             va_mae_sum = 0
             n = 0
+            # Peak MAE 계산을 위한 예측값 수집
+            all_preds = []
+            all_targets = []
+            
             with torch.no_grad():
                 for Xb, yb, _ in dl_va:
                     Xb, yb = Xb.to(DEVICE), yb.to(DEVICE)
@@ -2359,13 +2515,33 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
                     va_loss_sum += loss.item() * bs
                     va_mae_sum += batch_mae_in_original_units(pred, yb, scaler_y) * bs
                     n += bs
+                    
+                    # 원본 스케일로 변환하여 저장 (Peak MAE 계산용)
+                    pred_orig = scaler_y.inverse_transform(pred.cpu().numpy().reshape(-1, 1)).ravel()
+                    target_orig = scaler_y.inverse_transform(yb.cpu().numpy().reshape(-1, 1)).ravel()
+                    all_preds.extend(pred_orig)
+                    all_targets.extend(target_orig)
             
             va_loss = va_loss_sum / max(1, n)
             va_mae = va_mae_sum / max(1, n)
             
-            # Early stopping
-            if va_loss < best_val_loss:
-                best_val_loss = va_loss
+            # 🔴 Peak MAE 계산 (train 데이터 기준 상위 10% threshold)
+            all_preds = np.array(all_preds)
+            all_targets = np.array(all_targets)
+            peak_threshold = np.quantile(y_tr, 0.9)  # train 데이터 기준 피크
+            peak_mask = all_targets >= peak_threshold
+            
+            if peak_mask.sum() > 0:  # 피크 데이터가 있는 경우
+                peak_mae = np.mean(np.abs(all_preds[peak_mask] - all_targets[peak_mask]))
+            else:
+                peak_mae = 0.0  # 피크 없으면 0
+            
+            # 🔴 복합 목적 함수: 전체 MAE + 피크 MAE
+            combined_metric = va_mae + 0.6 * peak_mae
+            
+            # Early stopping (복합 metric 기준)
+            if combined_metric < best_val_loss:
+                best_val_loss = combined_metric
                 patience_count = 0
             else:
                 patience_count += 1
@@ -2373,12 +2549,12 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
                     break
             
             # Optuna pruning (중간 결과가 나쁘면 조기 종료)
-            trial.report(va_mae, ep)
+            trial.report(combined_metric, ep)
             if trial.should_prune():
                 raise optuna.TrialPruned()
         
-        # Validation MAE 반환
-        return va_mae
+        # 🔴 복합 Metric 반환 (Val MAE + 0.6 * Peak MAE)
+        return combined_metric
     
     # Optuna study 생성 및 실행
     study = optuna.create_study(
@@ -2393,7 +2569,7 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
     print("✅ Optuna 최적화 완료")
     print("=" *  70)
     print(f"\n🏆 Best Trial:")
-    print(f"  - Value (Val MAE): {study.best_trial.value:.4f}")
+    print(f"  - Value (Val MAE + 0.6*Peak MAE): {study.best_trial.value:.4f}")
     print(f"\n📊 Best Hyperparameters:")
     for key, value in study.best_params.items():
         print(f"  - {key}: {value}")
@@ -2450,6 +2626,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         torch.cuda.manual_seed_all(SEED)
     print(f"[Config] EPOCHS:{EPOCHS}, BATCH_SIZE:{BATCH_SIZE}, SEQ_LEN:{SEQ_LEN}, PRED_LEN:{PRED_LEN}")
     print(f"[Config] PATCH_LEN:{PATCH_LEN}, STRIDE:{STRIDE}, LR:{LR}, Warmup:{WARMUP_EPOCHS}, Patience:{PATIENCE}")
+    print(f"[Config] Log Transform: {Config.USE_LOG_TRANSFORM} (eps={Config.LOG_EPSILON}), Peak Weight: α={Config.PEAK_WEIGHT_ALPHA}, Quantile={Config.PEAK_THRESHOLD_QUANTILE}")
 
     N = len(y)
     split_tr = int(0.7*N); split_va = int(0.85*N)
@@ -2457,18 +2634,13 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     X_va, y_va = X[split_tr:split_va], y[split_tr:split_va]
     X_te, y_te = X[split_va:], y[split_va:]
 
-    def get_scaler():
-        st = SCALER_TYPE.lower()
-        if st=="robust": return RobustScaler()
-        if st=="minmax": return MinMaxScaler()
-        return StandardScaler()
-
-    scaler_y = get_scaler()
+    # 전역 get_scaler 함수 사용 (Log 변환은 타겟만)
+    scaler_y = get_scaler(for_target=True)  # 타겟: Log 변환 적용
     y_tr_sc = scaler_y.fit_transform(y_tr.reshape(-1,1)).ravel()
     y_va_sc = scaler_y.transform(y_va.reshape(-1,1)).ravel()
     y_te_sc = scaler_y.transform(y_te.reshape(-1,1)).ravel()
 
-    scaler_x = get_scaler()
+    scaler_x = get_scaler(for_target=False)  # 피처: Log 변환 미적용
     X_tr_sc = scaler_x.fit_transform(X_tr)
     X_va_sc = scaler_x.transform(X_va)
     X_te_sc = scaler_x.transform(X_te)
