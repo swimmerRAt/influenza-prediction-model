@@ -278,6 +278,45 @@ def load_from_postgres(
         db.close()
 
 
+def load_trends_from_postgres(
+    table_name: str = "trends_data",
+    db_name: str = "trends",
+    **kwargs
+) -> pd.DataFrame:
+    """
+    트렌드 데이터베이스에서 데이터 로드 (Google, Naver, Twitter Trends)
+    
+    Parameters:
+    -----------
+    table_name : str
+        테이블 이름 (기본값: "trends_data")
+    db_name : str
+        데이터베이스 이름 (기본값: "trends")
+    **kwargs : dict
+        load_data()에 전달할 추가 인자 (columns, where, limit 등)
+    
+    Returns:
+    --------
+    pd.DataFrame
+        트렌드 데이터
+    
+    Example:
+    --------
+    >>> trends_df = load_trends_from_postgres()
+    >>> trends_df = load_trends_from_postgres(where="year >= 2020")
+    """
+    db = TimeSeriesDB(dbname=db_name)
+    try:
+        db.connect()
+        return db.load_data(table_name, **kwargs)
+    except Exception as e:
+        print(f"⚠️  트렌드 데이터 로드 실패: {e}")
+        print(f"   먼저 'python database/update_trends_database.py'를 실행하세요.")
+        return pd.DataFrame()
+    finally:
+        db.close()
+
+
 def fetch_latest_data_from_api(api_url: str = None, dataset_ids: List[str] = None) -> pd.DataFrame:
     """
     API를 통해 최신 데이터를 가져옴

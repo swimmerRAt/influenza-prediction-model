@@ -184,6 +184,20 @@ class Config:
     USE_EXOG = "all"
     INCLUDE_SEASONAL_FEATS = True  # week_sin 포함 여부
     
+    # ===== 연령대별 동학 설정 =====
+    USE_AGE_GROUP_DYNAMICS = False  # 어린이 집단 ILI를 외생 변수로 사용 (현재 비활성화)
+    # 주의: "0-6세"는 ILI 데이터가 없음! "0세"와 "1-6세"로 분리되어 있음
+    LEAD_AGE_GROUPS = ["0세", "1-6세", "7-12세"]  # 선행 지표 연령대 (유행이 먼저 시작)
+    
+    # ===== 피처 제외 설정 =====
+    EXCLUDE_HOSPITALIZATION = True  # hospitalization 피처 제외 여부
+    
+    # ===== 트렌드 데이터 설정 (Google, Naver, Twitter) =====
+    # TODO: API가 메타데이터만 반환하는 문제 해결 후 True로 변경
+    USE_TRENDS_DATA = False  # 트렌드 데이터 사용 여부 (현재 비활성화)
+    TRENDS_DB_NAME = "trends"  # PostgreSQL 트렌드 데이터베이스 이름
+    TRENDS_TABLE_NAME = "trends_data"  # 트렌드 데이터 테이블 이름
+    
     # ===== 출력 설정 =====
     OUT_CSV = str(BASE_DIR / "ili_predictions.csv")
     PLOT_LAST_WINDOW = str(BASE_DIR / "plot_last_window.png")
@@ -435,12 +449,13 @@ def _norm_season_text(s: str) -> str:
 # =========================
 
 # 연령대 그룹 정의 (데이터셋마다 연령대 표기가 다름)
+# 주의: '0-6세'는 합계 연령대로 ILI 데이터가 없음! '0세'와 '1-6세'를 각각 사용해야 함
 AGE_GROUP_MAPPING = {
     # 표준화된 연령대 이름 -> 각 데이터셋에서 사용되는 이름들
-    '0-6세': ['0-6세', '0세', '1-6세'],  # ds_0106, ds_0108은 0-6세로 합쳐져 있음
-    '0세': ['0세'],
-    '1-6세': ['1-6세'],
-    '7-12세': ['7-12세'],
+    '0세': ['0세'],           # 영아 - ILI 있음 (선행 지표)
+    '1-6세': ['1-6세'],       # 유아 - ILI 있음 (선행 지표)
+    '0-6세': ['0-6세'],       # 합계 연령대 - ILI 없음! (사용 불가)
+    '7-12세': ['7-12세'],     # 초등학생 - ILI 있음 (선행 지표)
     '13-18세': ['13-18세'],
     '19-49세': ['19-49세'],
     '50-64세': ['50-64세'],
@@ -1095,6 +1110,49 @@ def load_and_prepare_by_age(
         axis=1
     )
     
+    # ===== 연령대별 동학 피처 추가 (어린이 집단 ILI) =====
+    if Config.USE_AGE_GROUP_DYNAMICS and age_group not in Config.LEAD_AGE_GROUPS:
+        print(f"\n🔗 연령대별 동학 피처 추가 중...")
+        for lead_age in Config.LEAD_AGE_GROUPS:
+            try:
+                lead_df = load_raw_data_by_age_group(data_dir=data_dir, age_group=lead_age)
+                if not lead_df.empty and 'ili' in lead_df.columns:
+                    lead_df = lead_df.sort_values(['year', 'week']).reset_index(drop=True)
+                    # year, week 기준으로 병합
+                    lead_ili = lead_df[['year', 'week', 'ili']].copy()
+                    lead_ili = lead_ili.rename(columns={'ili': f'ili_{lead_age.replace("-", "_").replace("세", "")}'})
+                    df = df.merge(lead_ili, on=['year', 'week'], how='left')
+                    print(f"   ✅ {lead_age} ILI 추가: ili_{lead_age.replace('-', '_').replace('세', '')}")
+            except Exception as e:
+                print(f"   ⚠️  {lead_age} 데이터 로드 실패: {e}")
+    
+    # ===== 트렌드 데이터 병합 (PostgreSQL trends DB) =====
+    if Config.USE_TRENDS_DATA:
+        print(f"\n🔍 트렌드 데이터 로드 중 (PostgreSQL {Config.TRENDS_DB_NAME} DB)...")
+        try:
+            from database.db_utils import load_trends_from_postgres
+            trends_df = load_trends_from_postgres(
+                table_name=Config.TRENDS_TABLE_NAME,
+                db_name=Config.TRENDS_DB_NAME
+            )
+            if not trends_df.empty and 'year' in trends_df.columns and 'week' in trends_df.columns:
+                df = df.merge(trends_df, on=['year', 'week'], how='left')
+                # Trends 컬럼명 확인 (google_, naver_, twitter_ 접두사)
+                trends_cols = [c for c in trends_df.columns if c not in ['year', 'week']]
+                print(f"   ✅ 트렌드 피처 추가: {len(trends_cols)}개 컬럼")
+                print(f"      (Google: {len([c for c in trends_cols if c.startswith('google_')])}개, "
+                      f"Naver: {len([c for c in trends_cols if c.startswith('naver_')])}개, "
+                      f"Twitter: {len([c for c in trends_cols if c.startswith('twitter_')])}개)")
+                # 결측치 0으로 채움 (검색량/언급량 없음 = 0)
+                for col in trends_cols:
+                    if col in df.columns:
+                        df[col] = df[col].fillna(0)
+            else:
+                print(f"   ⚠️  트렌드 데이터가 비어있거나 year, week 컬럼이 없습니다.")
+        except Exception as e:
+            print(f"   ⚠️  트렌드 데이터 로드 실패: {e}")
+            print(f"   💡 먼저 'python database/update_trends_database.py'를 실행하세요.")
+    
     # ===== 피처 선택 =====
     # 기본 피처: ILI (타겟)
     chosen = ['ili']
@@ -1104,6 +1162,12 @@ def load_and_prepare_by_age(
     has_detection = 'detection_rate' in df.columns and df['detection_rate'].notna().any()
     has_emergency = 'emergency_patients' in df.columns and df['emergency_patients'].notna().any()
     has_vaccine = 'vaccine_rate' in df.columns and df['vaccine_rate'].notna().any()
+    
+    # hospitalization 제외 설정 확인
+    exclude_hosp = getattr(Config, 'EXCLUDE_HOSPITALIZATION', False)
+    if exclude_hosp:
+        has_hosp = False
+        print("   ⚠️ hospitalization 피처 제외됨 (Config.EXCLUDE_HOSPITALIZATION=True)")
     
     if use_exog in ('all', 'auto'):
         if has_hosp:
@@ -1125,6 +1189,23 @@ def load_and_prepare_by_age(
     # 계절성 피처 추가
     if INCLUDE_SEASONAL_FEATS:
         chosen.append('week_sin')
+    
+    # 연령대별 동학 피처 추가
+    if Config.USE_AGE_GROUP_DYNAMICS and age_group not in Config.LEAD_AGE_GROUPS:
+        for lead_age in Config.LEAD_AGE_GROUPS:
+            col_name = f'ili_{lead_age.replace("-", "_").replace("세", "")}'
+            if col_name in df.columns and df[col_name].notna().any():
+                chosen.append(col_name)
+                print(f"   ✅ 선행 지표 추가: {col_name}")
+    
+    # 트렌드 피처 추가 (google_, naver_, twitter_ 접두사로 자동 감지)
+    if Config.USE_TRENDS_DATA:
+        trends_cols = [c for c in df.columns if c.startswith(('google_', 'naver_', 'twitter_'))]
+        for col in trends_cols:
+            if col in df.columns and df[col].notna().any():
+                chosen.append(col)
+        if trends_cols:
+            print(f"   ✅ 트렌드 피처 {len(trends_cols)}개 추가")
     
     print(f"   - 선택된 피처: {chosen}")
     
@@ -1405,6 +1486,51 @@ def load_and_prepare(
         df["week_sin"] = np.sin(2 * np.pi * df["week"] / 52.0)
     else:
         df["week_sin"] = 0.0
+    
+    # --- 연령대별 동학 피처 추가 (PostgreSQL 버전) ---
+    if Config.USE_AGE_GROUP_DYNAMICS and age_group and age_group not in Config.LEAD_AGE_GROUPS:
+        print(f"\n🔗 연령대별 동학 피처 추가 중 (PostgreSQL)...")
+        # 현재 df는 필터링된 연령대만 있으므로, 전체 데이터를 다시 로드해야 함
+        # 여기서는 merged CSV에서 직접 로드하는 방식으로 처리
+        try:
+            csv_path = pick_csv_path()
+            full_df = pd.read_csv(csv_path)
+            for lead_age in Config.LEAD_AGE_GROUPS:
+                lead_data = full_df[full_df['age_group'] == lead_age].copy()
+                if not lead_data.empty and 'ili' in lead_data.columns:
+                    lead_data = lead_data.sort_values(['year', 'week']).reset_index(drop=True)
+                    lead_ili = lead_data[['year', 'week', 'ili']].copy()
+                    col_name = f'ili_{lead_age.replace("-", "_").replace("세", "")}'
+                    lead_ili = lead_ili.rename(columns={'ili': col_name})
+                    df = df.merge(lead_ili, on=['year', 'week'], how='left')
+                    # 결측치 처리
+                    if col_name in df.columns:
+                        df[col_name] = df[col_name].fillna(0)
+                    print(f"   ✅ {lead_age} ILI 추가: {col_name}")
+        except Exception as e:
+            print(f"   ⚠️  연령대별 동학 피처 추가 실패: {e}")
+    
+    # --- 트렌드 데이터 병합 (PostgreSQL trends DB) ---
+    if Config.USE_TRENDS_DATA:
+        print(f"\n🔍 트렌드 데이터 로드 중 (PostgreSQL {Config.TRENDS_DB_NAME} DB)...")
+        try:
+            from database.db_utils import load_trends_from_postgres
+            trends_df = load_trends_from_postgres(
+                table_name=Config.TRENDS_TABLE_NAME,
+                db_name=Config.TRENDS_DB_NAME
+            )
+            if not trends_df.empty and 'year' in trends_df.columns and 'week' in trends_df.columns:
+                df = df.merge(trends_df, on=['year', 'week'], how='left')
+                trends_cols = [c for c in trends_df.columns if c not in ['year', 'week']]
+                print(f"   ✅ 트렌드 피처 추가: {len(trends_cols)}개 컬럼")
+                for col in trends_cols:
+                    if col in df.columns:
+                        df[col] = df[col].fillna(0)
+            else:
+                print(f"   ⚠️  트렌드 데이터가 비어있거나 year, week 컬럼이 없습니다.")
+        except Exception as e:
+            print(f"   ⚠️  트렌드 데이터 로드 실패: {e}")
+            print(f"   💡 먼저 'python database/update_database.py'를 실행하세요.")
 
     # --- Alias 매핑 ---
     if "hospitalization" in df.columns and "respiratory_index" not in df.columns:
@@ -1435,15 +1561,25 @@ def load_and_prepare(
         '응급실 인플루엔자 환자': 'emergency_patients',
         '아형': 'subtype'
     }
+    
+    # hospitalization 제외 설정 확인
+    exclude_hosp = getattr(Config, 'EXCLUDE_HOSPITALIZATION', False)
+    
     # week는 week_sin으로 대체, 나머지는 그대로
     chosen = []
     for v in column_mapping.values():
         if v == "week":
             chosen.append("week_sin")
+        elif v == "hospitalization" and exclude_hosp:
+            # hospitalization 제외
+            continue
         else:
             chosen.append(v)
     # 중복 제거 및 순서 보존
     chosen = [x for i, x in enumerate(chosen) if x not in chosen[:i]]
+    
+    if exclude_hosp:
+        print("   ⚠️ hospitalization 피처 제외됨 (Config.EXCLUDE_HOSPITALIZATION=True)")
 
     # 숫자화 & 보간
     for c in chosen:
@@ -1474,6 +1610,23 @@ def load_and_prepare(
     feat_names = chosen[:]
     if INCLUDE_SEASONAL_FEATS and "week_sin" in df.columns:
         feat_names.append("week_sin")
+    
+    # 연령대별 동학 피처 추가 (PostgreSQL 버전)
+    if Config.USE_AGE_GROUP_DYNAMICS and age_group and age_group not in Config.LEAD_AGE_GROUPS:
+        for lead_age in Config.LEAD_AGE_GROUPS:
+            col_name = f'ili_{lead_age.replace("-", "_").replace("세", "")}'
+            if col_name in df.columns:
+                feat_names.append(col_name)
+                print(f"   ✅ 선행 지표 피처 추가: {col_name}")
+    
+    # 트렌드 피처 추가 (PostgreSQL 버전)
+    if Config.USE_TRENDS_DATA:
+        trends_cols = [c for c in df.columns if c.startswith(('google_', 'naver_', 'twitter_'))]
+        for col in trends_cols:
+            if col in df.columns:
+                feat_names.append(col)
+        if trends_cols:
+            print(f"   ✅ 트렌드 피처 {len(trends_cols)}개 추가")
 
     # 선택된 입력 피처 로그
     print(f"\n[Data] Exogenous detected -> vaccine_rate: {has_vax} | respiratory/hospitalization: {has_resp} | climate_feats: {climate_feats}")

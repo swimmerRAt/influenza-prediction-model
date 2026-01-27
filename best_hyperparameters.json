@@ -1,12 +1,12 @@
 {
   "d_model": 128,
-  "n_heads": 2,
-  "enc_layers": 3,
-  "ff_dim": 384,
-  "dropout": 0.25551145509820666,
-  "lr": 0.00022608374489475436,
-  "weight_decay": 4.267783777491683e-05,
-  "batch_size": 32,
+  "n_heads": 8,
+  "enc_layers": 2,
+  "ff_dim": 64,
+  "dropout": 0.48451594269044673,
+  "lr": 0.00015239905865534263,
+  "weight_decay": 6.837165247851921e-05,
+  "batch_size": 16,
   "seq_len": 8,
-  "patch_len": 2
+  "patch_len": 3
 }

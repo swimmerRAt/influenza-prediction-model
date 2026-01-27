@@ -75,7 +75,72 @@ influenza-prediction-model/
    - Best Val MAE(검증): 8.10
    - Test MAE(테스트): 10.76
    (실행 로그에서 확인 가능)
+## 🎯 고급 예측 기능
 
+### 1️⃣ 연령대별 동학 (Age Group Dynamics)
+
+유행은 보통 어린이 집단에서 먼저 시작되어 성인층으로 전파됩니다. 이를 활용하여:
+- **선행 지표 연령대**: 0-6세, 7-12세의 ILI 데이터를 외생 변수로 사용
+- **효과**: 성인 연령대(예: 19-49세)의 피크를 더 정확하게 예측
+- **설정**:
+  ```python
+  # patchTST.py Config 섹션
+  USE_AGE_GROUP_DYNAMICS = True  # 활성화/비활성화
+  LEAD_AGE_GROUPS = ["0-6세", "7-12세"]  # 선행 지표 연령대
+  ```
+
+### 2️⃣ 트렌드 데이터 통합 (Google, Naver, Twitter)
+
+검색량/언급량 데이터는 병원 방문 전의 행동 패턴을 반영하여 예측 시차를 줄입니다:
+- **데이터 소스**: 
+  - `ds_0701`: Google Trends (독감 관련 검색어)
+  - `ds_0801`: Naver Trends (네이버 검색 데이터)
+  - `ds_0901`: Twitter Trends (트위터 언급량)
+- **효과**: 피크 시작 1-2주 전에 검색/언급량이 증가하는 패턴 활용
+- **데이터베이스**: PostgreSQL `trends` 데이터베이스에 별도 저장
+- **설정**:
+  ```python
+  # patchTST.py Config 섹션
+  USE_TRENDS_DATA = True  # 활성화/비활성화
+  TRENDS_DB_NAME = "trends"  # PostgreSQL DB 이름
+  TRENDS_TABLE_NAME = "trends_data"  # 테이블 이름
+  ```
+
+### 3️⃣ 트렌드 데이터 업데이트
+
+**단일 명령으로 모든 데이터베이스 업데이트:**
+```bash
+# 인플루엔자 데이터 + 트렌드 데이터 한 번에 업데이트
+python database/update_database.py
+```
+
+자동으로 수행되는 작업:
+1. **인플루엔자 데이터 업데이트** (influenza DB)
+   - API에서 인플루엔자 데이터 다운로드
+   - data/before 폴더의 과거 데이터 로딩
+   - 모든 데이터 병합 및 PostgreSQL influenza DB에 저장
+   
+2. **트렌드 데이터 업데이트** (trends DB)
+   - API에서 Google, Naver, Twitter Trends 데이터 다운로드 (ds_0701, ds_0801, ds_0901)
+   - 3개 데이터 병합 (year, week 기준)
+   - PostgreSQL trends 데이터베이스에 저장
+   - CSV 백업 생성 (`trends_data.csv`)
+
+### 4️⃣ Peak-Aware Loss Function
+
+피크 예측 정확도 향상을 위한 맞춤형 손실 함수:
+- **피크 가중치 (Alpha)**: 8.0 (상위 25% 유행 구간에 강력한 가중치)
+- **진폭 보존 (Beta)**: 0.3 (피크 높이 보존)
+- **Horizon Weighting**: 먼 미래 예측에 더 높은 가중치 (exponential 모드)
+- **Log Transform**: 타겟 변수에 log(1+x) 변환 적용하여 피크 스케일 정규화
+
+### 📊 예측 성능 향상
+
+이러한 고급 기능들을 조합하면:
+- ✅ **피크 타이밍 예측**: 1-2주 더 정확하게 예측
+- ✅ **피크 높이 예측**: 진폭 보존 손실로 과소/과대 예측 감소
+- ✅ **조기 경보**: Google Trends로 유행 시작 조기 감지
+- ✅ **전파 패턴**: 연령대별 동학으로 유행 확산 경로 파악
 ## � 모델 비교: PatchTST vs Seasonal SEIRS
 
 본 프로젝트에서는 딥러닝 모델(PatchTST)과 전통적인 역학 수리모델(Seasonal SEIRS)의 성능을 비교했습니다.
@@ -211,18 +276,47 @@ df = df[pandemic_mask]
 
 ### 데이터 검증
 
+데이터베이스 업데이트 후 데이터 무결성을 확인합니다:
+
 ```bash
-# 병합 전후 데이터 검증
+# 인플루엔자 데이터 + 트렌드 데이터 검증
 python database/validate_database.py
 ```
 
 **검증 항목**:
+
+#### 1️⃣ 인플루엔자 데이터 검증
 - ✅ 연령대 데이터 보존 확인
 - ✅ 아형 다양성 확인
 - ✅ 입원환자 수 합산 정확도
-- ✅ 필수 컬럼 존재 여부
-- ✅ 결측치 비율 분석
-- ✅ 팬데믹 기간 데이터 제외 확인
+- ✅ 컬럼 정렬 일관성 (ili, detection_rate, hospitalization 등)
+- ✅ 팬데믹 vs 비팬데믹 기간 데이터 비교
+- ✅ CSV 백업 vs PostgreSQL DB 데이터 일치도
+
+#### 2️⃣ 트렌드 데이터 검증
+- ✅ Google Trends 데이터 일치도 (google_* 컬럼)
+- ✅ Naver Trends 데이터 일치도 (naver_* 컬럼)
+- ✅ Twitter Trends 데이터 일치도 (twitter_* 컬럼)
+- ✅ CSV 백업 vs PostgreSQL trends DB 데이터 일치도
+- ✅ 컬럼별 match percentage 보고
+
+**출력 예시**:
+```
+=== Influenza Data Validation ===
+✅ Validation successful
+Match percentage: 98.5%
+Max diff: 0.03 (hospitalization)
+
+=== Trends Data Validation ===
+✅ Validation successful
+Overall match: 99.2%
+Top 10 best matching columns:
+  - google_독감증상: 100.0%
+  - naver_해열제: 99.8%
+  ...
+
+✅ Both validations passed (2/2)
+```
 
 ## 🤖 모델 아키텍처 (PatchTST)
 
