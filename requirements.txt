@@ -1,23 +1,18 @@
-# Core dependencies
-pandas
-numpy
-matplotlib
-seaborn
-scikit-learn
-
-# Deep Learning
-torch
-
-# Hyperparameter Optimization
-optuna
-
-# API 통신
-requests
-python-dotenv
-
-# Database (시계열 데이터 관리)
+requests>=2.28.0
+pandas>=1.5.0
+torch>=2.0.0
+torchdiffeq>=0.2.0
+xarray>=2023.1.0
+properscoring>=0.1
+scipy>=1.10.0
+matplotlib>=3.7.0
+netCDF4>=1.6.0
+torchcubicspline @ git+https://github.com/patrick-kidger/torchcubicspline.git
 psycopg2-binary
-
-# 추가 유틸리티
+python-dotenv
+optuna
 scipy
 tabulate
+seaborn
+scikit-learn
+numpy

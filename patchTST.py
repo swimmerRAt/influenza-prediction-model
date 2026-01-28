@@ -117,7 +117,7 @@ class Config:
     
     # ===== Optuna 최적화 설정 =====
     USE_OPTUNA = True       # Optuna 최적화 실행
-    N_TRIALS = 100          # Optuna 최적화 시도 횟수
+    N_TRIALS = 30          # Optuna 최적화 시도 횟수
     OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
     
     # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
@@ -137,9 +137,9 @@ class Config:
     
     # ===== 모델 하이퍼파라미터 (기본값) =====
     # Optuna를 사용하지 않을 때 또는 최적화 후 고정값으로 사용
-    EPOCHS = 200
+    EPOCHS = 50
     BATCH_SIZE = 64
-    SEQ_LEN = 12            # 입력 시퀀스 길이 (과거 몇 주)
+    SEQ_LEN = 16            # 입력 시퀀스 길이 (과거 몇 주)
     PRED_LEN = 4            # 예측 길이 (미래 몇 주) — 기본: 4주(한 달)
     PATCH_LEN = 4           # CNN 패치 길이
     STRIDE = 1              # 패치 스트라이드
@@ -159,13 +159,13 @@ class Config:
     WARMUP_EPOCHS = 30      # Learning rate warmup epochs
     
     # ===== Loss 함수 설정 =====
-    PEAK_THRESHOLD_QUANTILE = 0.75  # 피크 기준 (상위 25% - 유행 진입 구간부터 가중)
-    PEAK_WEIGHT_ALPHA = 8.0         # 피크 구간 가중치 (4.0 → 8.0으로 상향)
-    AMPLITUDE_WEIGHT_BETA = 0.3     # 진폭 보존 항 가중치
+    PEAK_THRESHOLD_QUANTILE = 0.85  # 피크 기준 (상위 15% - 더 높은 피크만 집중)
+    PEAK_WEIGHT_ALPHA = 12.0        # 피크 구간 가중치 (8.0 → 12.0으로 상향, peak 언더슈팅 감소)
+    AMPLITUDE_WEIGHT_BETA = 0.6     # 진폭 보존 항 가중치 (0.3 → 0.6, 3~4주 후 예측값 상향)
     
     # Horizon Weighting (예측 구간별 가중치)
     HORIZON_WEIGHT_MODE = "exponential"  # "exponential", "tail_boost", "uniform"
-    HORIZON_EXP_SCALE = 1.2              # exponential 모드 스케일
+    HORIZON_EXP_SCALE = 2.0              # exponential 모드 스케일 (1.2 → 2.0)
     HORIZON_TAIL_BOOST = 2.5             # tail_boost 모드: 뒤쪽 가중치 배수
     HORIZON_TAIL_COUNT = 2               # tail_boost 모드: 뒤쪽 몇 개
     
@@ -175,7 +175,7 @@ class Config:
     SCALER_TYPE = "robust"  # Scaler 타입: "standard", "robust", "minmax"
     
     # Log 변환 설정 (피크 예측 향상)
-    USE_LOG_TRANSFORM = True  # 타겟 변수에 log(1+x) 변환 적용
+    USE_LOG_TRANSFORM = False  # 타겟 변수에 log(1+x) 변환 적용
     LOG_EPSILON = 1.0         # log(x + epsilon)의 epsilon 값
     
     # 외생 특징 사용 모드
@@ -1906,11 +1906,12 @@ class PatchTSTModel(nn.Module):
         # Shared MLP
         z = self.shared_mlp(z)  # (B, hidden_dim)
         
-        # Dual-head prediction
-        trend = self.head_trend(z)         # (B, H) - 기본 곡선
-        peak = torch.relu(self.head_peak(z))  # (B, H) - 피크 보정 (양수만, "더 위로만")
+        # Dual-head prediction with adaptive gating
+        trend = self.head_trend(z)              # (B, H) - 기본 트렌드
+        peak = torch.relu(self.head_peak(z))    # (B, H) - 피크 보정 (양수만)
         
-        return trend + peak    # (B,H) - 최종 예측
+        # trend가 클 때 peak 영향 증가 (sigmoid gating)
+        return trend + peak * torch.sigmoid(trend)  # (B,H) - 최종 예측
 
     def correlation_loss(pred, true):
     # pred, true: (B, H)
