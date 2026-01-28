@@ -40,6 +40,7 @@ except ImportError:
 import os
 import pandas as pd
 import requests
+
 from dotenv import load_dotenv
 import warnings
 from datetime import datetime
@@ -253,18 +254,27 @@ def flatten_parsed_data(data_list):
     return flattened
 
 
-def fetch_trend_data(dsid="ds_0701", cnt=500):
+def fetch_trend_data(dsid="ds_0701", cnt=100):
     """
     GFID API에서 트렌드 데이터 다운로드 및 year/week 변환
     (src_jaehong/api/etlDataApi.js 패턴 사용)
     
+    1단계: recent API로 origin 목록 조회
+    2단계: 각 unique origin에 대해 실제 데이터(parsedData) 조회
+    3단계: 모든 데이터 병합 및 year/week 변환
+    
     Args:
         dsid: 데이터셋 ID (ds_0701=Google, ds_0801=Naver, ds_0901=Twitter)
-        cnt: 최근 데이터 건수
+        cnt: 최근 데이터 건수 (origin 조회용)
     
     Returns:
         DataFrame: year, week 컬럼이 추가된 트렌드 데이터
     """
+    try:
+        from .api_client import get_etl_data_by_origin
+    except ImportError:
+        from api_client import get_etl_data_by_origin
+    
     dsid_names = {
         'ds_0701': 'Google Trends',
         'ds_0801': 'Naver Trends', 
@@ -275,24 +285,86 @@ def fetch_trend_data(dsid="ds_0701", cnt=500):
     print(f"\n📡 GFID API에서 {dsid} ({dsid_name}) 데이터 다운로드 중...")
     
     try:
-        # GFID API 직접 호출 (src_jaehong 패턴)
-        api_data = get_recent_etl_data(dsid, cnt)
+        # 1단계: recent API로 메타데이터(origin 목록) 조회
+        print(f"   [1/3] 메타데이터 조회 중...")
+        meta_data = get_recent_etl_data(dsid, cnt)
         
-        if not api_data:
-            print(f"   ⚠️  [{dsid}] 데이터 없음")
+        if not meta_data:
+            print(f"   ⚠️  [{dsid}] 메타데이터 없음")
             return pd.DataFrame()
         
-        print(f"   ✅ [{dsid}] 데이터 수신: {len(api_data)}건")
+        print(f"   ✅ [{dsid}] 메타데이터 수신: {len(meta_data)}건")
         
-        # 첫 번째 항목 구조 디버깅
-        if isinstance(api_data[0], dict):
-            print(f"   📋 [{dsid}] 첫 번째 항목 키: {list(api_data[0].keys())[:10]}")
-            sample = {k: v for k, v in list(api_data[0].items())[:5]}
-            print(f"   📋 [{dsid}] 샘플 데이터: {sample}")
+        # 2단계: unique origin 목록 추출
+        origins = set()
+        origin_collected_at = {}  # origin -> collectedAt 매핑
         
-        # parsedData 플래튼
-        flattened_data = flatten_parsed_data(api_data)
-        df = pd.DataFrame(flattened_data)
+        for item in meta_data:
+            if isinstance(item, dict) and 'origin' in item:
+                origin = item['origin']
+                origins.add(origin)
+                if 'collectedAt' in item:
+                    origin_collected_at[origin] = item['collectedAt']
+        
+        origins = list(origins)
+        print(f"   [2/3] 고유 origin 개수: {len(origins)}개")
+        
+        if not origins:
+            print(f"   ⚠️  [{dsid}] origin이 없습니다.")
+            return pd.DataFrame()
+        
+        # 3단계: 각 origin에서 실제 데이터(parsedData) 조회
+        print(f"   [3/3] 각 origin에서 실제 데이터 조회 중...")
+        all_data = []
+        success_count = 0
+        
+        # 최대 조회 개수 제한 (너무 많으면 시간 오래 걸림)
+        max_origins = min(len(origins), 50)
+        
+        for i, origin in enumerate(origins[:max_origins]):
+            try:
+                origin_data = get_etl_data_by_origin(dsid, origin)
+                
+                if origin_data:
+                    # parsedData 추출
+                    if isinstance(origin_data, list):
+                        for item in origin_data:
+                            if isinstance(item, dict):
+                                parsed = item.get('parsedData', {})
+                                if parsed and isinstance(parsed, dict):
+                                    # collectedAt 추가
+                                    if 'collectedAt' in item:
+                                        parsed['collectedAt'] = item['collectedAt']
+                                    elif origin in origin_collected_at:
+                                        parsed['collectedAt'] = origin_collected_at[origin]
+                                    all_data.append(parsed)
+                                    success_count += 1
+                    elif isinstance(origin_data, dict):
+                        parsed = origin_data.get('parsedData', {})
+                        if parsed and isinstance(parsed, dict):
+                            if 'collectedAt' in origin_data:
+                                parsed['collectedAt'] = origin_data['collectedAt']
+                            elif origin in origin_collected_at:
+                                parsed['collectedAt'] = origin_collected_at[origin]
+                            all_data.append(parsed)
+                            success_count += 1
+                            
+            except Exception as e:
+                # 개별 origin 실패는 무시하고 계속
+                pass
+            
+            # 진행률 표시 (10개마다)
+            if (i + 1) % 10 == 0:
+                print(f"      진행: {i + 1}/{max_origins} origins 처리됨")
+        
+        print(f"   ✅ [{dsid}] 실제 데이터 {len(all_data)}건 수집 완료")
+        
+        if not all_data:
+            print(f"   ⚠️  [{dsid}] parsedData가 비어 있음. 메타데이터로 대체...")
+            # 실패 시 메타데이터라도 사용
+            df = pd.DataFrame(meta_data)
+        else:
+            df = pd.DataFrame(all_data)
         
         if df.empty:
             print(f"   ⚠️  [{dsid}] DataFrame이 비어 있음")
@@ -314,6 +386,10 @@ def fetch_trend_data(dsid="ds_0701", cnt=500):
             print(f"   ✅ [{dsid}] 최종 데이터: {len(df)}건")
             print(f"   📊 [{dsid}] year 범위: {df['year'].min()}-{df['year'].max()}")
             print(f"   📊 [{dsid}] week 범위: {df['week'].min()}-{df['week'].max()}")
+            # 실제 데이터 컬럼 확인 (year, week, collectedAt 제외)
+            data_cols = [c for c in df.columns if c not in ['year', 'week', 'collectedAt', 'dsId', 'origin', 'id', 'contentType']]
+            if data_cols:
+                print(f"   📊 [{dsid}] 데이터 컬럼: {data_cols[:5]}{'...' if len(data_cols) > 5 else ''}")
         
         return df
     
@@ -574,19 +650,17 @@ if __name__ == "__main__":
     print("  1-4. PostgreSQL influenza DB에 저장")
     print("  1-5. CSV로 백업 (merged_influenza_data.csv)")
     
-    if is_auth_configured():
-        print("\n[2단계] 트렌드 데이터 업데이트 (trends DB)")
-        print("  2-1. GFID API에서 Google/Naver/Twitter 트렌드 데이터 가져오기")
-        print("  2-2. 데이터 병합 및 PostgreSQL trends DB에 저장")
-    else:
-        print("\n[2단계] 트렌드 데이터 업데이트 (건너뜀)")
-        print("  ⚠️  GFID API 인증 설정 필요")
+    # 트렌드 데이터는 현재 비활성화 (API가 parsedData를 반환하지 않음)
+    # 나중에 API가 수정되면 다시 활성화 가능
+    print("\n[2단계] 트렌드 데이터 업데이트 (현재 비활성화)")
+    print("  ⚠️  트렌드 API가 메타데이터만 반환하여 실제 데이터 수집 불가")
+    print("  ⚠️  API 수정 후 다시 활성화 예정")
     
     response = input("\n계속하시겠습니까? (y/n): ").lower()
     
     if response == 'y':
         success_count = 0
-        total_steps = 2 if is_auth_configured() else 1
+        total_steps = 1  # 현재는 인플루엔자 데이터만 업데이트
         
         # 1단계: 인플루엔자 데이터 업데이트
         print("\n" + "="*60)
@@ -605,23 +679,26 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
         
-        # 2단계: 트렌드 데이터 업데이트 (GFID API 직접 호출)
+        # 2단계: 트렌드 데이터 업데이트 (현재 비활성화)
+        # API가 parsedData를 반환하지 않아 실제 데이터 수집 불가
+        # 나중에 API가 수정되면 아래 주석을 해제하여 활성화
         print("\n" + "="*60)
-        print("2단계: 트렌드 데이터 업데이트")
+        print("2단계: 트렌드 데이터 업데이트 (건너뜀)")
         print("="*60)
+        print("\n⚠️  트렌드 데이터 업데이트가 비활성화되어 있습니다.")
+        print("   현재 API가 메타데이터만 반환하여 실제 데이터를 수집할 수 없습니다.")
+        print("   API 수정 후 update_trends_database() 함수를 활성화하세요.")
         
-        if is_auth_configured():
-            print("\n📡 GFID API 직접 호출 방식으로 트렌드 데이터를 가져옵니다...")
-            try:
-                if update_trends_database():
-                    success_count += 1
-            except Exception as e:
-                print(f"\n⚠️  트렌드 데이터 업데이트 실패: {e}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print("\n⚠️  트렌드 데이터 업데이트를 건너뜁니다.")
-            print("   GFID API 인증 설정이 필요합니다.")
+        # === 트렌드 데이터 업데이트 (비활성화됨) ===
+        # if is_auth_configured():
+        #     print("\n📡 GFID API 직접 호출 방식으로 트렌드 데이터를 가져옵니다...")
+        #     try:
+        #         if update_trends_database():
+        #             success_count += 1
+        #     except Exception as e:
+        #         print(f"\n⚠️  트렌드 데이터 업데이트 실패: {e}")
+        #         import traceback
+        #         traceback.print_exc()
         
         # 최종 결과
         print("\n" + "="*60)

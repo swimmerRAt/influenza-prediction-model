@@ -319,12 +319,12 @@ def load_trends_from_postgres(
 
 def fetch_latest_data_from_api(api_url: str = None, dataset_ids: List[str] = None) -> pd.DataFrame:
     """
-    API를 통해 최신 데이터를 가져옴
+    GFID API를 통해 최신 데이터를 가져옴
     
     Parameters:
     -----------
     api_url : str, optional
-        API 서버 URL (기본값: 환경변수 API_URL)
+        API 서버 URL (사용되지 않음, GFID API 직접 호출)
     dataset_ids : List[str], optional
         가져올 데이터셋 ID 리스트
     
@@ -333,21 +333,40 @@ def fetch_latest_data_from_api(api_url: str = None, dataset_ids: List[str] = Non
     pd.DataFrame
         API에서 가져온 최신 데이터
     """
-    if api_url is None:
-        api_url = os.getenv('API_URL', 'http://localhost:3000')
+    import json
+    
+    # api_client 임포트
+    try:
+        from .api_client import (
+            get_recent_etl_data,
+            get_etl_data_by_origin,
+            is_auth_configured,
+        )
+    except ImportError:
+        from api_client import (
+            get_recent_etl_data,
+            get_etl_data_by_origin,
+            is_auth_configured,
+        )
     
     if dataset_ids is None:
-        # 기본 데이터셋 ID 리스트
+        # 인플루엔자 데이터셋만 (트렌드 제외)
         dataset_ids = [
-            'ds_0101', 'ds_0102', 'ds_0103', 'ds_0104', 'ds_0105', 
+            'ds_0101', 'ds_0103', 'ds_0104', 'ds_0105', 
             'ds_0106', 'ds_0107', 'ds_0108', 'ds_0109', 'ds_0110',
-            'ds_0701', 'ds_0801', 'ds_0901'
         ]
     
     print(f"\n{'='*60}")
-    print(f"🌐 API에서 최신 데이터 가져오기")
+    print(f"🌐 GFID API에서 최신 데이터 가져오기")
     print(f"{'='*60}")
-    print(f"API URL: {api_url}")
+    
+    # 인증 확인
+    if not is_auth_configured():
+        print("⚠️  GFID API 인증이 설정되지 않았습니다.")
+        print("   .env 파일에 GFID_CLIENT_ID, GFID_CLIENT_SECRET를 설정하세요.")
+        return pd.DataFrame()
+    
+    print(f"✅ GFID API 인증 설정 완료")
     print(f"데이터셋 개수: {len(dataset_ids)}")
     
     all_dataframes = []
@@ -356,39 +375,82 @@ def fetch_latest_data_from_api(api_url: str = None, dataset_ids: List[str] = Non
         print(f"\n[{idx}/{len(dataset_ids)}] {dsid} 로딩 중...")
         
         try:
-            request_url = f"{api_url}/download"
-            request_body = {"dsid": dsid, "returnData": True}  # 데이터를 직접 반환 요청
+            # 1단계: 메타데이터로 origin 목록 가져오기
+            meta_data = get_recent_etl_data(dsid, cnt=100)
             
-            response = requests.post(
-                request_url,
-                json=request_body,
-                timeout=300
-            )
-            
-            if response.status_code != 200:
-                print(f"  ⚠️ API 요청 실패: {response.status_code}")
+            if not meta_data:
+                print(f"  ⚠️ 메타데이터 없음")
                 continue
             
-            result = response.json()
-            if not result.get('ok'):
-                print(f"  ⚠️ API 에러: {result.get('error')}")
+            # 2단계: unique origin 추출
+            origins = set()
+            for item in meta_data:
+                if isinstance(item, dict) and 'origin' in item:
+                    origins.add(item['origin'])
+            
+            if not origins:
+                print(f"  ⚠️ origin 없음")
                 continue
             
-            # API 응답에서 직접 데이터 가져오기 (파일 저장하지 않음)
-            api_data = result.get('result', {}).get('data', [])
+            print(f"  📋 {len(origins)}개 origin 발견")
             
-            if api_data:
-                df = pd.DataFrame(api_data)
-                df['dataset_id'] = dsid
-                all_dataframes.append(df)
-                print(f"  ✅ 완료: {len(api_data)} 레코드 (메모리에서 직접 처리)")
+            # 3단계: 각 origin에서 parsedData 가져오기 (최대 20개)
+            all_parsed_data = []
+            max_origins = min(len(origins), 20)
+            
+            for origin in list(origins)[:max_origins]:
+                try:
+                    origin_data = get_etl_data_by_origin(dsid, origin)
+                    
+                    if origin_data:
+                        # parsedData 추출
+                        if isinstance(origin_data, list):
+                            for item in origin_data:
+                                if isinstance(item, dict) and 'parsedData' in item:
+                                    parsed = item['parsedData']
+                                    if isinstance(parsed, str):
+                                        try:
+                                            parsed = json.loads(parsed)
+                                        except:
+                                            continue
+                                    if isinstance(parsed, list):
+                                        all_parsed_data.extend(parsed)
+                                    elif isinstance(parsed, dict):
+                                        all_parsed_data.append(parsed)
+                        elif isinstance(origin_data, dict) and 'parsedData' in origin_data:
+                            parsed = origin_data['parsedData']
+                            if isinstance(parsed, str):
+                                try:
+                                    parsed = json.loads(parsed)
+                                except:
+                                    continue
+                            if isinstance(parsed, list):
+                                all_parsed_data.extend(parsed)
+                            elif isinstance(parsed, dict):
+                                all_parsed_data.append(parsed)
+                except Exception:
+                    pass
+            
+            if not all_parsed_data:
+                print(f"  ⚠️ parsedData 없음")
+                continue
+            
+            # DataFrame 생성
+            df = pd.DataFrame(all_parsed_data)
+            
+            # BOM 문자 제거
+            df.columns = [col.replace('\ufeff', '').strip() for col in df.columns]
+            
+            df['dataset_id'] = dsid
+            all_dataframes.append(df)
+            print(f"  ✅ 완료: {len(all_parsed_data)} 레코드")
         
         except Exception as e:
             print(f"  ⚠️ 오류: {e}")
             continue
         
-        # 서버 부하 방지를 위한 대기
-        time.sleep(0.5)
+        # API 부하 방지
+        time.sleep(0.3)
     
     if not all_dataframes:
         print(f"\n⚠️ 가져온 데이터가 없습니다!")
@@ -488,6 +550,20 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
     print("\n🔄 데이터 통합 중...")
     print(f"통합 전: {len(df)} 행")
     
+    # 영문 → 한글 컬럼명 변환 (API 데이터와 before 데이터 통일)
+    eng_to_kor = {
+        'year': '연도',
+        'week': '주차',
+        'age_group': '연령대',
+        'ili': '의사환자 분율',
+        'hospitalization': '입원환자 수',
+        'subtype': '아형',
+        'detection_rate': '인플루엔자 검출률',
+        'vaccine_rate': '예방접종률',
+        'emergency_patients': '응급실 인플루엔자 환자',
+    }
+    df = df.rename(columns=eng_to_kor)
+    
     # 연도와 주차 컬럼이 있는지 확인
     if '연도' not in df.columns or '주차' not in df.columns:
         print("⚠️ '연도' 또는 '주차' 컬럼이 없습니다. 통합하지 않고 반환합니다.")
@@ -571,11 +647,33 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
             
             aggregation_dict[col] = sum_emergency
         elif col in ['의사환자 분율', '예방접종률']:
-            # 평균값 사용
-            aggregation_dict[col] = lambda x: pd.Series([v for v in x if pd.notna(v)]).mean() if any(pd.notna(v) for v in x) else None
+            # 평균값 사용 (숫자 변환 후)
+            def mean_numeric(x):
+                numeric_vals = []
+                for v in x:
+                    if pd.notna(v):
+                        try:
+                            numeric_vals.append(float(v))
+                        except (ValueError, TypeError):
+                            pass
+                return sum(numeric_vals) / len(numeric_vals) if numeric_vals else None
+            aggregation_dict[col] = mean_numeric
         else:
-            # 기타: 첫 번째 유효값
-            aggregation_dict[col] = lambda x: next((v for v in x if pd.notna(v)), None)
+            # 기타: 숫자면 평균, 아니면 첫 번째 유효값
+            def first_or_mean(x):
+                values = [v for v in x if pd.notna(v)]
+                if not values:
+                    return None
+                # 숫자 변환 시도
+                numeric_vals = []
+                for v in values:
+                    try:
+                        numeric_vals.append(float(v))
+                    except (ValueError, TypeError):
+                        # 문자열인 경우 첫 번째 값 반환
+                        return values[0]
+                return sum(numeric_vals) / len(numeric_vals) if numeric_vals else values[0]
+            aggregation_dict[col] = first_or_mean
     
     # 그룹화 및 집계
     df_consolidated = df.groupby(groupby_cols, as_index=False).agg(aggregation_dict)
@@ -583,6 +681,10 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
     # 3단계: 우세 아형 정보 병합
     if not dominant_subtypes.empty:
         print(f"\n[3단계] 우세 아형 정보 병합")
+        # 중복 제거: (연도, 주차)별로 하나의 아형만 유지
+        dominant_subtypes = dominant_subtypes.drop_duplicates(subset=['연도', '주차'], keep='first')
+        print(f"  고유 (연도, 주차) 아형: {len(dominant_subtypes)}건")
+        
         df_consolidated = pd.merge(
             df_consolidated, 
             dominant_subtypes, 
@@ -590,6 +692,18 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
             how='left'
         )
         print(f"  아형 정보 추가 완료")
+    
+    # 중복 제거 (연도, 주차, 연령대 기준)
+    groupby_cols = ['연도', '주차', '연령대']
+    if all(col in df_consolidated.columns for col in groupby_cols):
+        before_dup = len(df_consolidated)
+        # 값이 있는 행 우선
+        sort_cols = groupby_cols + [c for c in ['의사환자 분율', '입원환자 수', '응급실 인플루엔자 환자'] if c in df_consolidated.columns]
+        df_consolidated = df_consolidated.sort_values(by=sort_cols, na_position='last')
+        df_consolidated = df_consolidated.drop_duplicates(subset=groupby_cols, keep='first')
+        after_dup = len(df_consolidated)
+        if before_dup != after_dup:
+            print(f"  중복 {before_dup - after_dup}개 제거됨")
     
     # dataset_id 컬럼 제거
     if 'dataset_id' in df_consolidated.columns:
@@ -621,6 +735,17 @@ def consolidate_by_year_week(df: pd.DataFrame) -> pd.DataFrame:
         '응급실 인플루엔자 환자': 'emergency_patients',
     }
     df_consolidated = df_consolidated.rename(columns=col_map)
+    
+    # 불필요한 컬럼 삭제
+    columns_to_drop = [
+        '0세', '1-6세', '7-12세', '13-18세', '19-49세', '50-64세', '65세 이상',
+        '수집 기간', '수집기간', 'collection_period'
+    ]
+    existing_cols_to_drop = [col for col in columns_to_drop if col in df_consolidated.columns]
+    if existing_cols_to_drop:
+        df_consolidated = df_consolidated.drop(columns=existing_cols_to_drop)
+        print(f"\n불필요 컬럼 {len(existing_cols_to_drop)}개 삭제: {existing_cols_to_drop}")
+    
     return df_consolidated
 
 
@@ -688,6 +813,26 @@ def merge_and_update_database(
         df_merged = consolidate_by_year_week(df_merged)
     
     print(f"\n최종 병합 데이터: {df_merged.shape}")
+    print(f"DEBUG: 컬럼명 = {list(df_merged.columns)}")
+    
+    # 중복 제거 (안전장치)
+    key_cols = ['year', 'week', 'age_group']
+    print(f"DEBUG: key_cols 존재 = {all(col in df_merged.columns for col in key_cols)}")
+    
+    if all(col in df_merged.columns for col in key_cols):
+        before_count = len(df_merged)
+        # 중복 확인
+        dup_check = df_merged.groupby(key_cols).size()
+        dup_count = (dup_check > 1).sum()
+        print(f"DEBUG: 중복 조합 = {dup_count}개")
+        
+        # 중복 시 값이 있는 행 우선 유지
+        df_merged = df_merged.sort_values(
+            by=key_cols + ['ili', 'hospitalization', 'emergency_patients'],
+            na_position='last'
+        ).drop_duplicates(subset=key_cols, keep='first')
+        after_count = len(df_merged)
+        print(f"DEBUG: 제거 후 = {after_count}행 (제거: {before_count - after_count}개)")
     
     # PostgreSQL에 저장
     with TimeSeriesDB() as db:
@@ -712,6 +857,31 @@ def merge_and_update_database(
         print(f"   • 테이블: {table_name}")
         print(f"   • 행 수: {row_count:,}")
         print(f"   • 소요 시간: {elapsed:.2f}초")
+    
+    # 🔴 CSV 저장 전 최종 정규화: 데이터 타입 통일 + 중복 제거
+    print(f"\n🔧 최종 정규화 중...")
+    
+    # year, week를 정수로 강제 변환 (float/int 혼재 방지)
+    if 'year' in df_merged.columns:
+        df_merged['year'] = pd.to_numeric(df_merged['year'], errors='coerce').astype('Int64')
+    if 'week' in df_merged.columns:
+        df_merged['week'] = pd.to_numeric(df_merged['week'], errors='coerce').astype('Int64')
+    
+    # 최종 중복 제거 (CSV 저장 직전)
+    key_cols = ['year', 'week', 'age_group']
+    if all(col in df_merged.columns for col in key_cols):
+        before_final = len(df_merged)
+        # NaN 제거된 값 우선, ili 값 있는 행 우선
+        df_merged = df_merged.sort_values(
+            by=key_cols + [c for c in ['ili'] if c in df_merged.columns],
+            na_position='last'
+        )
+        df_merged = df_merged.drop_duplicates(subset=key_cols, keep='first')
+        after_final = len(df_merged)
+        if before_final != after_final:
+            print(f"   ⚠️ 최종 중복 {before_final - after_final}개 제거됨")
+        else:
+            print(f"   ✅ 중복 없음 확인")
     
     # CSV로도 저장 (백업)
     csv_output = "merged_influenza_data.csv"

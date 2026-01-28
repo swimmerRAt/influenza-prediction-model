@@ -433,9 +433,12 @@ def get_scaler(name=None, for_target=False):
         return LogTransformScaler(base_scaler=base, epsilon=Config.LOG_EPSILON)
     else:
         # 기존 scaler (피처 또는 Log 변환 미사용)
-        if s == "robust":  return RobustScaler()
-        if s == "minmax":  return MinMaxScaler()
-        return StandardScaler()
+        if s == "robust":
+            return RobustScaler()
+        elif s == "minmax":
+            return MinMaxScaler()
+        else:
+            return StandardScaler()
 
 def _norm_season_text(s: str) -> str:
     ss = str(s).replace("절기", "")
@@ -1323,15 +1326,15 @@ def load_and_prepare(
             # 자동 선택: 데이터가 가장 풍부한 연령대
             # 우선순위: 19-49세 (가장 일반적) > 65세이상 > 65세 이상 > 0-6세
             candidate_age_groups = ['19-49세', '65세이상', '65세 이상', '0-6세']
-            
-            for candidate in candidate_age_groups:
-                if candidate in age_groups:
-                    # 해당 연령대의 데이터 품질 확인
-                    temp_df = df[df['age_group'] == candidate].copy()
-                    valid_ili = temp_df['ili'].notna().sum()
-                    if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
-                        target_age_group = candidate
-                        break
+        
+        for candidate in candidate_age_groups:
+            if candidate in age_groups:
+                # 해당 연령대의 데이터 품질 확인
+                temp_df = df[df['age_group'] == candidate].copy()
+                valid_ili = temp_df['ili'].notna().sum()
+                if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
+                    target_age_group = candidate
+                    break
         
         if target_age_group and target_age_group in age_groups:
             print(f"   - '{target_age_group}' 연령대 데이터 사용")
@@ -1469,6 +1472,13 @@ def load_and_prepare(
         df["week"] = pd.to_numeric(df["week"], errors="coerce")
         df = df.sort_values(["year", "week"]).reset_index(drop=True)
         print(f"   - 정렬: year, week 기준 (시간 순서 유지)")
+        
+        # 🔴 중복 제거: 같은 (year, week) 조합이 여러 개 있으면 첫 번째만 유지
+        before_len = len(df)
+        df = df.drop_duplicates(subset=["year", "week"], keep="first")
+        after_len = len(df)
+        if before_len != after_len:
+            print(f"   ⚠️ 중복 {before_len - after_len}개 제거됨 (동일 year/week)")
     elif "label" in df.columns:
         df = df.sort_values(["label"]).reset_index(drop=True)
 
@@ -2310,7 +2320,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     print(f"Saved plot -> {PLOT_MA_CURVES}")
 
 
-# =========================
+    # =========================
 # Feature Importance utils
 # =========================
 def _eval_mse_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names,
@@ -2893,8 +2903,12 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         model.load_state_dict(best_state)
     print(f"Best Val MAE: {best_val:.6f}")
 
-    # Test - 모든 성능 지표 계산
-    model.eval(); te_mae_sum=0; te_mse_sum=0; te_rmse_sum=0; k=0
+    # Test - 모든 성능 지표 계산 + Horizon별 예측값 수집
+    model.eval()
+    te_mae_sum=0; te_mse_sum=0; te_rmse_sum=0; k=0
+    all_preds = []  # 모든 예측값 수집
+    all_trues = []  # 모든 실제값 수집
+    
     with torch.no_grad():
         for Xb,yb,_ in dl_te:
             Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
@@ -2903,9 +2917,22 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
             te_mse_sum += batch_mse_in_original_units(pred,yb,scaler_y)*yb.size(0)
             te_rmse_sum += batch_rmse_in_original_units(pred,yb,scaler_y)*yb.size(0)
             k+=yb.size(0)
+            
+            # 예측값/실제값 수집 (원본 스케일로 변환)
+            pred_np = pred.cpu().numpy()
+            yb_np = yb.cpu().numpy()
+            pred_orig = scaler_y.inverse_transform(pred_np.reshape(-1,1)).reshape(-1, PRED_LEN)
+            yb_orig = scaler_y.inverse_transform(yb_np.reshape(-1,1)).reshape(-1, PRED_LEN)
+            all_preds.append(pred_orig)
+            all_trues.append(yb_orig)
+    
     te_mae_avg = te_mae_sum/max(1,k)
     te_mse_avg = te_mse_sum/max(1,k)
     te_rmse_avg = te_rmse_sum/max(1,k)
+    
+    # 모든 예측값/실제값 병합
+    all_preds = np.concatenate(all_preds, axis=0)  # (N, PRED_LEN)
+    all_trues = np.concatenate(all_trues, axis=0)  # (N, PRED_LEN)
     
     print("\n" + "="*60)
     print("🎯 최종 테스트 성능 평가")
@@ -2914,6 +2941,64 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     print(f"MSE  (Mean Squared Error):       {te_mse_avg:.6f}")
     print(f"RMSE (Root Mean Squared Error):  {te_rmse_avg:.6f}")
     print("="*60)
+    
+    # ===== Horizon별 예측값 (최신 예측 시점 기준) =====
+    print("\n" + "="*60)
+    print("📅 최신 예측 시점 기준 Horizon별 예측값")
+    print("="*60)
+    
+    # 가장 최근 예측 시점 (마지막 샘플)
+    last_idx = len(all_preds) - 1
+    last_pred = all_preds[last_idx]  # 마지막 예측 시점의 예측값들 (PRED_LEN개)
+    last_true = all_trues[last_idx]  # 마지막 예측 시점의 실제값들 (PRED_LEN개)
+    
+    print(f"\n📍 예측 시작 시점: 테스트 데이터 마지막 샘플 (index {last_idx})")
+    print(f"   (이 시점에서 향후 {PRED_LEN}주를 예측)")
+    print()
+    
+    horizons_to_check = [1, 2, 3, 4]  # 1주, 2주, 3주, 4주 후
+    
+    print(f"{'Horizon':<12} {'예측값':>12} {'실제값':>12} {'오차':>12} {'오차율':>10}")
+    print("-" * 60)
+    
+    for h in horizons_to_check:
+        if h <= PRED_LEN:
+            h_idx = h - 1  # 0-indexed
+            pred_val = last_pred[h_idx]
+            true_val = last_true[h_idx]
+            error = pred_val - true_val
+            error_pct = (error / true_val * 100) if true_val != 0 else 0
+            
+            print(f"{h}주 후 ({h*7}일)  {pred_val:>12.2f} {true_val:>12.2f} {error:>+12.2f} {error_pct:>+9.1f}%")
+    
+    print("-" * 60)
+    
+    # 전체 테스트 기간에 대한 Horizon별 성능 통계 (참고용)
+    print(f"\n📊 전체 테스트 기간 Horizon별 성능 (참고):")
+    for h in horizons_to_check:
+        if h <= PRED_LEN:
+            h_idx = h - 1
+            h_preds = all_preds[:, h_idx]
+            h_trues = all_trues[:, h_idx]
+            h_mae = np.mean(np.abs(h_preds - h_trues))
+            print(f"   {h}주 후: MAE={h_mae:.2f}")
+    
+    print("\n" + "="*60)
+    
+    # ===== Horizon별 결과 CSV 저장 =====
+    horizon_results = []
+    for i in range(len(all_preds)):
+        row = {'sample_idx': i}
+        for h in range(1, PRED_LEN + 1):
+            row[f'pred_{h}w'] = all_preds[i, h-1]
+            row[f'true_{h}w'] = all_trues[i, h-1]
+            row[f'error_{h}w'] = all_preds[i, h-1] - all_trues[i, h-1]
+        horizon_results.append(row)
+    
+    df_horizon = pd.DataFrame(horizon_results)
+    horizon_csv_path = str(BASE_DIR / "horizon_predictions.csv")
+    df_horizon.to_csv(horizon_csv_path, index=False)
+    print(f"📊 Horizon별 예측 결과 저장: {horizon_csv_path}")
 
     # Plot curves
     plt.figure(figsize=(12,4))
