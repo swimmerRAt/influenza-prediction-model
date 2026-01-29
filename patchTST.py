@@ -73,18 +73,78 @@ CANDIDATE_CSVS = [
 # =========================
 def load_data_from_postgres():
     """
-    PostgreSQL에서 데이터를 로드하는 함수
+    PostgreSQL에서 인플루엔자 데이터를 로드하는 함수
     Returns:
         pd.DataFrame: 로드된 데이터
     """
     print("\n📊 데이터 로드: PostgreSQL에서 데이터프레임으로 불러옵니다...")
     try:
         df = load_from_postgres(table_name="influenza_data")
-        print(f"✅ PostgreSQL 로드 완료: {df.shape}")
+        print(f"✅ PostgreSQL influenza_data 로드 완료: {df.shape}")
         return df
     except Exception as e:
         print(f"❌ PostgreSQL 로드 실패: {e}")
         raise
+
+def load_weather_data_from_postgres():
+    """
+    PostgreSQL에서 날씨 데이터를 로드하는 함수
+    Returns:
+        pd.DataFrame: 로드된 날씨 데이터 (year, week, min_temp, max_temp, avg_humidity)
+    """
+    print("\n🌡️  날씨 데이터 로드: PostgreSQL weather_data 테이블")
+    try:
+        db = TimeSeriesDB()
+        db.connect()
+        df_weather = db.load_data(table_name="weather_data")
+        db.close()
+        print(f"✅ PostgreSQL weather_data 로드 완료: {df_weather.shape}")
+        print(f"   - 컬럼: {list(df_weather.columns)}")
+        return df_weather
+    except Exception as e:
+        print(f"⚠️  날씨 데이터 로드 실패: {e}")
+        print(f"   weather_data 테이블이 없거나 업로드되지 않았습니다.")
+        return None
+
+def merge_weather_with_influenza(df_influenza, df_weather):
+    """
+    인플루엔자 데이터와 날씨 데이터를 year, week 기준으로 병합
+    
+    Parameters:
+        df_influenza: 인플루엔자 데이터
+        df_weather: 날씨 데이터
+    
+    Returns:
+        pd.DataFrame: 병합된 데이터
+    """
+    print(f"\n🔗 데이터 병합: influenza_data + weather_data")
+    print(f"   - 병합 기준: year, week")
+    
+    # 수치형 컬럼 확인
+    df_influenza['year'] = pd.to_numeric(df_influenza['year'], errors='coerce')
+    df_influenza['week'] = pd.to_numeric(df_influenza['week'], errors='coerce')
+    df_weather['year'] = pd.to_numeric(df_weather['year'], errors='coerce')
+    df_weather['week'] = pd.to_numeric(df_weather['week'], errors='coerce')
+    
+    # LEFT JOIN (influenza_data 기준)
+    df_merged = pd.merge(
+        df_influenza,
+        df_weather,
+        on=['year', 'week'],
+        how='left'
+    )
+    
+    print(f"   ✅ 병합 완료:")
+    print(f"      - influenza_data 행 수: {len(df_influenza)}")
+    print(f"      - weather_data 행 수: {len(df_weather)}")
+    print(f"      - 병합 후 행 수: {len(df_merged)}")
+    
+    # 새로 추가된 컬럼 확인
+    new_cols = [c for c in df_weather.columns if c not in df_influenza.columns and c not in ['year', 'week']]
+    if new_cols:
+        print(f"      - 추가된 날씨 컬럼: {new_cols}")
+    
+    return df_merged
 
 def pick_csv_path():
     for p in CANDIDATE_CSVS:
@@ -116,8 +176,8 @@ class Config:
     """모델 설정 통합 관리"""
     
     # ===== Optuna 최적화 설정 =====
-    USE_OPTUNA = True       # Optuna 최적화 실행
-    N_TRIALS = 30          # Optuna 최적화 시도 횟수
+    USE_OPTUNA = False       # Optuna 최적화 실행
+    N_TRIALS = 50          # Optuna 최적화 시도 횟수
     OPTUNA_TIMEOUT = None   # 최적화 시간 제한 (초), None이면 무제한
     
     # Optuna 최적화 범위 (USE_OPTUNA=True일 때 사용)
@@ -137,7 +197,7 @@ class Config:
     
     # ===== 모델 하이퍼파라미터 (기본값) =====
     # Optuna를 사용하지 않을 때 또는 최적화 후 고정값으로 사용
-    EPOCHS = 50
+    EPOCHS = 200
     BATCH_SIZE = 64
     SEQ_LEN = 16            # 입력 시퀀스 길이 (과거 몇 주)
     PRED_LEN = 4            # 예측 길이 (미래 몇 주) — 기본: 4주(한 달)
@@ -175,8 +235,8 @@ class Config:
     SCALER_TYPE = "robust"  # Scaler 타입: "standard", "robust", "minmax"
     
     # Log 변환 설정 (피크 예측 향상)
-    USE_LOG_TRANSFORM = False  # 타겟 변수에 log(1+x) 변환 적용
-    LOG_EPSILON = 1.0         # log(x + epsilon)의 epsilon 값
+    USE_LOG_TRANSFORM = True  # 타겟 변수에 log(1+x) 변환 적용
+    LOG_EPSILON = 0.000001         # log(x + epsilon)의 epsilon 값
     
     # 외생 특징 사용 모드
     # "auto": 자동 감지, "none": 사용 안함, "vax": 백신률만, 
@@ -191,6 +251,13 @@ class Config:
     
     # ===== 피처 제외 설정 =====
     EXCLUDE_HOSPITALIZATION = True  # hospitalization 피처 제외 여부
+    
+    # ===== 일별 데이터 변환 설정 =====
+    USE_DAILY_DATA = True              # 주차별 → 일별 데이터 변환 여부
+    DAILY_INTERP_METHOD = "linear"     # 일별 데이터 보간 : "gaussian" 또는 "linear"
+    GAUSSIAN_STD = 1.0                 # 바우시안 커널 표준편차
+    DAILY_SEQ_LEN = 112                # 일별 입력 길이 (약 16주)
+    DAILY_PRED_LEN = 28                # 일별 예측 길이 (약 4주)
     
     # ===== 트렌드 데이터 설정 (Google, Naver, Twitter) =====
     # TODO: API가 메타데이터만 반환하는 문제 해결 후 True로 변경
@@ -253,16 +320,27 @@ def _iso_weeks_in_year(y: int) -> int:
     # ISO 달력의 마지막 주 번호(52 또는 53)
     return date(y, 12, 28).isocalendar().week
 
-def weekly_to_daily_interp(
+def weekly_to_daily_interp_gaussian(
     df: pd.DataFrame,
     season_col: str = "season_norm",
     week_col: str = "week",
     target_col: str = "ili",
+    method: str = "gaussian",
+    gaussian_std: float = 1.0,
 ) -> pd.DataFrame:
     """
-    주 단위 데이터를 일 단위로 확장(선형보간). season/week 없으면 label에서 추출하거나,
-    최후에는 연속 주차를 생성해 보간합니다.
-    반환: date 컬럼 포함한 일 단위 DF
+    주 단위 데이터를 일 단위로 확장(바우시안 또는 선형보간).
+    
+    Parameters:
+        df: 주차별 데이터프레임
+        season_col: 시즌 컬럼명
+        week_col: 주차 컬럼명
+        target_col: 타겟 컬럼명
+        method: 보간 방법 ("gaussian" 또는 "linear")
+        gaussian_std: 바우시안 커널 표준편차 (method="gaussian"일 때)
+        
+    Returns:
+        date 컬럼 포함한 일 단위 DF
     """
     df = df.copy()
     df.columns = df.columns.str.replace("\ufeff", "", regex=True).str.strip()
@@ -347,10 +425,35 @@ def weekly_to_daily_interp(
     df = df.set_index("week_start").sort_index()
     df_daily = df.resample("D").asfreq()
 
-    # 수치형은 선형보간
+    # 수치형 보간
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    for c in num_cols:
-        df_daily[c] = df_daily[c].interpolate(method="linear", limit_direction="both")
+    
+    if method.lower() == "gaussian":
+        # 🔴 바우시안 보간법 (Gaussian Interpolation)
+        from scipy.ndimage import gaussian_filter1d
+        
+        for c in num_cols:
+            # 원본 주차별 데이터
+            valid_mask = df[c].notna()
+            if valid_mask.sum() < 2:
+                # 데이터가 2개 미만이면 선형보간
+                df_daily[c] = df_daily[c].interpolate(method="linear", limit_direction="both")
+                continue
+            
+            # 먼저 선형보간으로 NaN 채우기
+            temp = df_daily[c].interpolate(method="linear", limit_direction="both")
+            
+            # 바우시안 필터 적용 (평활 효과)
+            if temp.notna().sum() > 0:
+                values = temp.fillna(temp.mean()).values
+                smoothed = gaussian_filter1d(values, sigma=gaussian_std)
+                df_daily[c] = smoothed
+            else:
+                df_daily[c] = temp
+    else:
+        # 선형보간 (기존 방식)
+        for c in num_cols:
+            df_daily[c] = df_daily[c].interpolate(method="linear", limit_direction="both")
 
     # 범주형은 앞뒤 채움
     cat_cols = [c for c in df.columns if c not in num_cols]
@@ -361,6 +464,12 @@ def weekly_to_daily_interp(
     out = df_daily.reset_index().rename(columns={"week_start": "date"})
     # date는 datetime으로 강제
     out["date"] = pd.to_datetime(out["date"])
+    
+    print(f"\n✅ 일별 데이터 변환 완료 ({method.upper()} 보간법):")
+    print(f"   - 입력: {len(df)} 주(week)")
+    print(f"   - 출력: {len(out)} 일(day) → {len(out)/7:.1f}배 확대")
+    print(f"   - 날짜 범위: {out['date'].min().date()} ~ {out['date'].max().date()}")
+    
     return out
     
 def set_seed(seed=42):
@@ -1057,10 +1166,65 @@ def load_and_prepare_by_age(
     if 'ili' not in df.columns:
         raise ValueError(f"연령대 '{age_group}'에 ILI 데이터가 없습니다.")
     
+    # ===== 날씨 데이터 병합 (PostgreSQL) =====
+    print(f"\n🌡️  날씨 데이터 병합 시도...")
+    try:
+        df_weather = load_weather_data_from_postgres()
+        if df_weather is not None and not df_weather.empty:
+            df = merge_weather_with_influenza(df, df_weather)
+            
+            # 병합 성공 확인
+            weather_cols_merged = [c for c in ['min_temp', 'max_temp', 'avg_humidity'] if c in df.columns]
+            print(f"\n   ✅ 날씨 데이터 병합 성공!")
+            print(f"      - 병합 후 Shape: {df.shape}")
+            print(f"      - 추가된 날씨 컬럼: {weather_cols_merged}")
+            print(f"      - 데이터베이스에서 성공적으로 가져온 날씨 데이터가 모델에 적용됩니다.")
+        else:
+            print(f"   ⚠️  날씨 데이터가 비어있습니다. 인플루엔자 데이터만으로 진행합니다.")
+    except Exception as e:
+        print(f"   ⚠️  날씨 데이터 병합 중 오류: {e}")
+        print(f"   인플루엔자 데이터만으로 진행합니다.")
+    
     print(f"\n📊 연령대별 데이터 전처리: {age_group}")
     
-    # 정렬
-    df = df.sort_values(['year', 'week']).reset_index(drop=True)
+    # ===== 일별 데이터 변환 (바우시안 보간) =====
+    if Config.USE_DAILY_DATA:
+        print(f"\n🔄 주차별 → 일별 데이터 변환 시작...")
+        print(f"   - 보간 방법: {Config.DAILY_INTERP_METHOD.upper()}")
+        print(f"   - 바우시안 표준편차: {Config.GAUSSIAN_STD}")
+        
+        # season_norm 생성 (먼저)
+        df['season_norm'] = df.apply(
+            lambda row: f"{int(row['year'])}-{int(row['year'])+1}" if row['week'] >= 36 
+                       else f"{int(row['year'])-1}-{int(row['year'])}",
+            axis=1
+        )
+        
+        # 정렬 (변환 전)
+        df = df.sort_values(['year', 'week']).reset_index(drop=True)
+        
+        # 일별 변환
+        df = weekly_to_daily_interp_gaussian(
+            df,
+            season_col="season_norm",
+            week_col="week",
+            target_col="ili",
+            method=Config.DAILY_INTERP_METHOD,
+            gaussian_std=Config.GAUSSIAN_STD
+        )
+        
+        # SEQ_LEN, PRED_LEN을 일별로 업데이트
+        global SEQ_LEN, PRED_LEN
+        SEQ_LEN = Config.DAILY_SEQ_LEN
+        PRED_LEN = Config.DAILY_PRED_LEN
+        
+        print(f"   ✅ 일별 데이터 변환 완료!")
+        print(f"   - 새로운 입력 길이 (SEQ_LEN): {SEQ_LEN}일")
+        print(f"   - 새로운 예측 길이 (PRED_LEN): {PRED_LEN}일")
+        print(f"   - 변환 후 데이터 포인트 수: {len(df)}")
+    else:
+        # 정렬 (일별 변환 미사용)
+        df = df.sort_values(['year', 'week']).reset_index(drop=True)
     
     # ===== 팬데믹 기간 처리 =====
     pandemic_mask = (
@@ -1210,6 +1374,26 @@ def load_and_prepare_by_age(
         if trends_cols:
             print(f"   ✅ 트렌드 피처 {len(trends_cols)}개 추가")
     
+    # 🌡️ 날씨 피처 추가 (PostgreSQL weather_data)
+    weather_cols = ['min_temp', 'max_temp', 'avg_humidity']  # weather_data 테이블의 컬럼
+    added_weather_cols = []
+    for col in weather_cols:
+        if col in df.columns and df[col].notna().any():
+            added_weather_cols.append(col)
+            chosen.append(col)
+    
+    if added_weather_cols:
+        print(f"\n🌡️  날씨 피처 모델에 적용:")
+        print(f"   ✅ PostgreSQL weather_data 테이블에서 가져온 {len(added_weather_cols)}개 피처 추가")
+        print(f"      - {added_weather_cols}")
+        # 각 날씨 피처의 통계 출력
+        for col in added_weather_cols:
+            data = df[col].dropna()
+            if len(data) > 0:
+                print(f"      • {col}: 평균 {data.mean():.2f}, 표준편차 {data.std():.2f}")
+    else:
+        print(f"\n⚠️  날씨 피처 없음 (weather_data 테이블 확인 필요)")
+    
     print(f"   - 선택된 피처: {chosen}")
     
     # 결측치 처리
@@ -1224,7 +1408,14 @@ def load_and_prepare_by_age(
     feat_names = chosen[:]
     X = df[feat_names].to_numpy(dtype=float)
     y = df['ili'].to_numpy(dtype=float)
-    labels = (df['season_norm'].astype(str) + f" ({age_group}) - W" + df['week'].astype(int).astype(str)).tolist()
+    
+    # Labels 생성 (일별 데이터인지 주차별 데이터인지 구분)
+    if Config.USE_DAILY_DATA and 'date' in df.columns:
+        # 일별 데이터: date 컬럼 사용
+        labels = (df['season_norm'].astype(str) + f" ({age_group}) - " + df['date'].astype(str)).tolist()
+    else:
+        # 주차별 데이터: week 컬럼 사용
+        labels = (df['season_norm'].astype(str) + f" ({age_group}) - W" + df['week'].astype(int).astype(str)).tolist()
     
     print(f"\n✅ 연령대 '{age_group}' 데이터 준비 완료:")
     print(f"   - X shape: {X.shape}")
@@ -1267,6 +1458,25 @@ def load_and_prepare(
     print(f"\n📊 원본 데이터 구조:")
     print(f"   - Shape: {df.shape}")
     print(f"   - Columns: {list(df.columns)}")
+    
+    # ===== 날씨 데이터 병합 (PostgreSQL) =====
+    print(f"\n🌡️  날씨 데이터 병합 시도...")
+    try:
+        df_weather = load_weather_data_from_postgres()
+        if df_weather is not None and not df_weather.empty:
+            df = merge_weather_with_influenza(df, df_weather)
+            
+            # 병합 성공 확인
+            weather_cols_merged = [c for c in ['min_temp', 'max_temp', 'avg_humidity'] if c in df.columns]
+            print(f"\n   ✅ 날씨 데이터 병합 성공!")
+            print(f"      - 병합 후 Shape: {df.shape}")
+            print(f"      - 추가된 날씨 컬럼: {weather_cols_merged}")
+            print(f"      - 데이터베이스에서 성공적으로 가져온 날씨 데이터가 모델에 적용됩니다.")
+        else:
+            print(f"   ⚠️  날씨 데이터가 비어있습니다. 인플루엔자 데이터만으로 진행합니다.")
+    except Exception as e:
+        print(f"   ⚠️  날씨 데이터 병합 중 오류: {e}")
+        print(f"   인플루엔자 데이터만으로 진행합니다.")
     
     # ===== PostgreSQL 데이터 형식 감지 및 처리 =====
     is_postgres_format = all(col in df.columns for col in ['year', 'week', 'age_group'])
@@ -1326,15 +1536,15 @@ def load_and_prepare(
             # 자동 선택: 데이터가 가장 풍부한 연령대
             # 우선순위: 19-49세 (가장 일반적) > 65세이상 > 65세 이상 > 0-6세
             candidate_age_groups = ['19-49세', '65세이상', '65세 이상', '0-6세']
-        
-        for candidate in candidate_age_groups:
-            if candidate in age_groups:
-                # 해당 연령대의 데이터 품질 확인
-                temp_df = df[df['age_group'] == candidate].copy()
-                valid_ili = temp_df['ili'].notna().sum()
-                if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
-                    target_age_group = candidate
-                    break
+            
+            for candidate in candidate_age_groups:
+                if candidate in age_groups:
+                    # 해당 연령대의 데이터 품질 확인
+                    temp_df = df[df['age_group'] == candidate].copy()
+                    valid_ili = temp_df['ili'].notna().sum()
+                    if valid_ili > 100:  # 최소 100개 이상의 유효 데이터
+                        target_age_group = candidate
+                        break
         
         if target_age_group and target_age_group in age_groups:
             print(f"   - '{target_age_group}' 연령대 데이터 사용")
@@ -1457,9 +1667,38 @@ def load_and_prepare(
         print(f"   - 주차 범위: {df['week'].min():.0f} ~ {df['week'].max():.0f}")
         print(f"   - 데이터 포인트 수: {len(df)}")
     
-    # ===== 기존 처리 로직 =====
-    # 주 단위 -> 일 단위 보간 (선택사항)
-    # df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
+    # ===== 일별 데이터 변환 (바우시안 보간) =====
+    if Config.USE_DAILY_DATA:
+        print(f"\n🔄 주차별 → 일별 데이터 변환 시작...")
+        print(f"   - 보간 방법: {Config.DAILY_INTERP_METHOD.upper()}")
+        print(f"   - 바우시안 표준편차: {Config.GAUSSIAN_STD}")
+        
+        # season_norm 생성 (아직 없으면)
+        if 'season_norm' not in df.columns and {'year', 'week'}.issubset(df.columns):
+            df['season_norm'] = df.apply(
+                lambda row: f"{int(row['year'])}-{int(row['year'])+1}" if row['week'] >= 36 
+                           else f"{int(row['year'])-1}-{int(row['year'])}",
+                axis=1
+            )
+        
+        # 일별 변환
+        df = weekly_to_daily_interp_gaussian(
+            df,
+            season_col="season_norm",
+            week_col="week",
+            target_col="ili",
+            method=Config.DAILY_INTERP_METHOD,
+            gaussian_std=Config.GAUSSIAN_STD
+        )
+        
+        # SEQ_LEN, PRED_LEN을 일별로 업데이트
+        global SEQ_LEN, PRED_LEN
+        SEQ_LEN = Config.DAILY_SEQ_LEN
+        PRED_LEN = Config.DAILY_PRED_LEN
+        
+        print(f"   ✅ 일별 데이터 변환 완료!")
+        print(f"   - 새로운 입력 길이 (SEQ_LEN): {SEQ_LEN}일")
+        print(f"   - 새로운 예측 길이 (PRED_LEN): {PRED_LEN}일")
     
     # ⚠️  정렬: year, week만 사용 (season_norm 정렬 제거)
     # season_norm 기준 정렬은 시간 순서를 파괴함 (week 1이 week 36보다 앞으로 감)
@@ -1638,6 +1877,26 @@ def load_and_prepare(
         if trends_cols:
             print(f"   ✅ 트렌드 피처 {len(trends_cols)}개 추가")
 
+    # 🌡️ 날씨 피처 추가 (PostgreSQL weather_data)
+    weather_cols = ['min_temp', 'max_temp', 'avg_humidity']  # weather_data 테이블의 컬럼
+    added_weather_cols = []
+    for col in weather_cols:
+        if col in df.columns:
+            added_weather_cols.append(col)
+            feat_names.append(col)
+    
+    if added_weather_cols:
+        print(f"\n🌡️  날씨 피처 모델에 적용:")
+        print(f"   ✅ PostgreSQL weather_data 테이블에서 가져온 {len(added_weather_cols)}개 피처 추가")
+        print(f"      - {added_weather_cols}")
+        # 각 날씨 피처의 통계 출력
+        for col in added_weather_cols:
+            data = df[col].dropna()
+            if len(data) > 0:
+                print(f"      • {col}: 평균 {data.mean():.2f}, 표준편차 {data.std():.2f}")
+    else:
+        print(f"\n⚠️  날씨 피처 없음 (weather_data 테이블 확인 필요)")
+    
     # 선택된 입력 피처 로그
     print(f"\n[Data] Exogenous detected -> vaccine_rate: {has_vax} | respiratory/hospitalization: {has_resp} | climate_feats: {climate_feats}")
     print(f"[Data] Selected feature columns (order) -> {feat_names}")
@@ -2524,6 +2783,87 @@ def plot_feature_importance(fi_df, out_csv=None, out_png=None):
 
 
 # =========================
+# Hyperparameter Management
+# =========================
+def get_default_hyperparameters() -> dict:
+    """
+    Config 클래스의 기본 하이퍼파라미터 반환
+    
+    Returns:
+        기본 하이퍼파라미터 dict
+    """
+    return {
+        'd_model': Config.D_MODEL,
+        'n_heads': Config.N_HEADS,
+        'enc_layers': Config.ENC_LAYERS,
+        'ff_dim': Config.FF_DIM,
+        'dropout': Config.DROPOUT,
+        'lr': Config.LR,
+        'weight_decay': Config.WEIGHT_DECAY,
+        'batch_size': Config.BATCH_SIZE,
+        'seq_len': Config.SEQ_LEN if not Config.USE_DAILY_DATA else Config.DAILY_SEQ_LEN,
+        'patch_len': Config.PATCH_LEN
+    }
+
+
+def load_best_hyperparameters(json_path: str = "best_hyperparameters.json") -> Optional[dict]:
+    """
+    저장된 best_hyperparameters.json에서 최적 하이퍼파라미터 로드
+    
+    Args:
+        json_path: JSON 파일 경로
+        
+    Returns:
+        하이퍼파라미터 dict 또는 None (파일 없음)
+    """
+    import json
+    import os
+    
+    if not os.path.exists(json_path):
+        return None
+    
+    try:
+        with open(json_path, 'r') as f:
+            params = json.load(f)
+        
+        print(f"\n{'='*70}")
+        print(f"✅ 저장된 최적 하이퍼파라미터 로드 성공: {json_path}")
+        print(f"{'='*70}")
+        print(f"📊 로드된 파라미터:")
+        for key, value in params.items():
+            print(f"   - {key}: {value}")
+        print(f"{'='*70}\n")
+        
+        return params
+    except Exception as e:
+        print(f"⚠️  JSON 파일 로드 실패 ({json_path}): {e}")
+        return None
+
+
+def save_best_hyperparameters(params: dict, json_path: str = "best_hyperparameters.json") -> bool:
+    """
+    최적 하이퍼파라미터를 JSON 파일에 저장
+    
+    Args:
+        params: 하이퍼파라미터 dict
+        json_path: 저장할 JSON 파일 경로
+        
+    Returns:
+        저장 성공 여부
+    """
+    import json
+    
+    try:
+        with open(json_path, 'w') as f:
+            json.dump(params, f, indent=2)
+        print(f"✅ 최적 하이퍼파라미터 저장 성공: {json_path}")
+        return True
+    except Exception as e:
+        print(f"❌ JSON 파일 저장 실패: {e}")
+        return False
+
+
+# =========================
 # Optuna Optimization
 # =========================
 def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
@@ -2546,10 +2886,20 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
     
     print("\n" + "=" * 70)
     print("🔍 Optuna 하이퍼파라미터 최적화 시작")
+    if Config.USE_DAILY_DATA:
+        print(f"   📅 일별 데이터 모드 (SEQ_LEN={SEQ_LEN}, PRED_LEN={PRED_LEN})")
+        print(f"   ⚙️  시퀀스 길이는 고정값 사용 (하이퍼파라미터 탐색 제외)")
+    else:
+        print(f"   📆 주차별 데이터 모드 (SEQ_LEN={SEQ_LEN}, PRED_LEN={PRED_LEN})")
+        print(f"   ⚙️  시퀀스 길이도 하이퍼파라미터 탐색 대상")
     print("=" * 70)
     
     def objective(trial: Trial) -> float:
         """Optuna objective function - validation MAE를 최소화"""
+        
+        # Trial 시작 알림
+        if Config.USE_DAILY_DATA and trial.number == 0:
+            print(f"\n   💡 Trial {trial.number}: 일별 데이터 모드로 학습 시작 (seq_len=112 고정)")
         
         # Config에서 탐색 공간 가져오기
         search_space = Config.OPTUNA_SEARCH_SPACE
@@ -2566,17 +2916,25 @@ def optimize_hyperparameters(X: np.ndarray, y: np.ndarray, labels: list, feat_na
         params['weight_decay'] = trial.suggest_float('weight_decay', *search_space['weight_decay'], log=True)
         params['batch_size'] = trial.suggest_categorical('batch_size', search_space['batch_size'])
 
-        # seq_len / pred_len / patch_len: search_space에 없을 수 있으므로 안전하게 처리
-        if 'seq_len' in search_space:
-            params['seq_len'] = trial.suggest_categorical('seq_len', search_space['seq_len'])
+        # seq_len / pred_len: 일별 데이터일 때는 고정값 사용
+        if Config.USE_DAILY_DATA:
+            # 일별 데이터: SEQ_LEN, PRED_LEN 고정 (하이퍼파라미터 탐색 안 함)
+            params['seq_len'] = SEQ_LEN   # 112일
+            params['pred_len'] = PRED_LEN # 28일
+            print(f"   [일별 데이터 모드] seq_len={SEQ_LEN}, pred_len={PRED_LEN} 고정")
         else:
-            params['seq_len'] = SEQ_LEN
+            # 주차별 데이터: 하이퍼파라미터 탐색
+            if 'seq_len' in search_space:
+                params['seq_len'] = trial.suggest_categorical('seq_len', search_space['seq_len'])
+            else:
+                params['seq_len'] = SEQ_LEN
 
-        if 'pred_len' in search_space:
-            params['pred_len'] = trial.suggest_categorical('pred_len', search_space['pred_len'])
-        else:
-            params['pred_len'] = PRED_LEN
+            if 'pred_len' in search_space:
+                params['pred_len'] = trial.suggest_categorical('pred_len', search_space['pred_len'])
+            else:
+                params['pred_len'] = PRED_LEN
 
+        # patch_len: 일별/주차별 모두 탐색
         if 'patch_len' in search_space:
             params['patch_len'] = trial.suggest_categorical('patch_len', search_space['patch_len'])
         else:
@@ -3284,8 +3642,30 @@ if __name__ == "__main__":
         
         # 모델 학습 및 평가
         best_params = None
+        
+        # USE_OPTUNA 플래그에 따라 처리
         if USE_OPTUNA and OPTUNA_AVAILABLE:
+            # Optuna로 최적화 실행
             best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+            # Optuna 최적화 결과 저장
+            if best_params:
+                save_best_hyperparameters(best_params)
+        else:
+            # Optuna 사용 안 함
+            if USE_OPTUNA and not OPTUNA_AVAILABLE:
+                print("\n⚠️ Optuna가 설치되지 않았습니다 (USE_OPTUNA=True)")
+                print("   설치 명령: pip install optuna")
+            
+            # JSON 파일에서 로드 시도
+            best_params = load_best_hyperparameters()
+            
+            # JSON 파일이 없으면 기본값 사용
+            if best_params is None:
+                print("\n📋 JSON 파일 없음 → Config의 기본 하이퍼파라미터 사용")
+                best_params = get_default_hyperparameters()
+                print("기본 하이퍼파라미터:")
+                for key, value in best_params.items():
+                    print(f"   - {key}: {value}")
         
         model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
             X, y, labels, feat_names,
@@ -3320,14 +3700,31 @@ if __name__ == "__main__":
         
         best_params = None
         
-        # Optuna 최적화 실행
+        # USE_OPTUNA 플래그에 따라 처리
         if USE_OPTUNA:
             if not OPTUNA_AVAILABLE:
-                print("\n⚠️ Optuna가 설치되지 않았습니다.")
+                print("\n⚠️ Optuna가 설치되지 않았습니다 (USE_OPTUNA=True)")
                 print("   설치 명령: pip install optuna")
-                print("   기본 하이퍼파라미터로 학습을 진행합니다.\n")
+                # Optuna가 없으면 기본값 사용
+                best_params = get_default_hyperparameters()
             else:
+                # Optuna로 최적화 실행
                 best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+                # Optuna 최적화 결과 저장
+                if best_params:
+                    save_best_hyperparameters(best_params)
+        else:
+            # Optuna 사용 안 함 (USE_OPTUNA=False)
+            # JSON 파일에서 로드 시도
+            best_params = load_best_hyperparameters()
+            
+            # JSON 파일이 없으면 기본값 사용
+            if best_params is None:
+                print("\n📋 JSON 파일 없음 → Config의 기본 하이퍼파라미터 사용")
+                best_params = get_default_hyperparameters()
+                print("기본 하이퍼파라미터:")
+                for key, value in best_params.items():
+                    print(f"   - {key}: {value}")
         
         # 최종 학습 실행
         model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
@@ -3363,6 +3760,19 @@ if __name__ == "__main__":
     print(f"\n📊 DataFrame 정보:")
     print(f"   - Shape: {df.shape}")
     print(f"   - Columns: {list(df.columns)}")
+    
+    # 날씨 데이터 포함 여부 확인
+    weather_cols_in_data = [c for c in ['min_temp', 'max_temp', 'avg_humidity'] if c in df.columns]
+    if weather_cols_in_data:
+        print(f"\n🌡️  날씨 데이터 포함 확인:")
+        print(f"   ✅ PostgreSQL weather_data 테이블에서 성공적으로 가져옴")
+        print(f"   - 포함된 날씨 컬럼: {weather_cols_in_data}")
+        for col in weather_cols_in_data:
+            data = df[col].dropna()
+            if len(data) > 0:
+                print(f"      • {col}: 평균 {data.mean():.2f}, 범위 [{data.min():.2f}, {data.max():.2f}]")
+    else:
+        print(f"\n⚠️  날씨 데이터 미포함 (weather_data 테이블 확인 필요)")
     print(f"\n처음 5개 행:")
     print(df.head())
     print(f"\n데이터 타입:")
@@ -3384,14 +3794,31 @@ if __name__ == "__main__":
     
     best_params = None
     
-    # Optuna 최적화 실행
+    # USE_OPTUNA 플래그에 따라 처리
     if USE_OPTUNA:
         if not OPTUNA_AVAILABLE:
-            print("\n⚠️ Optuna가 설치되지 않았습니다.")
+            print("\n⚠️ Optuna가 설치되지 않았습니다 (USE_OPTUNA=True)")
             print("   설치 명령: pip install optuna")
-            print("   기본 하이퍼파라미터로 학습을 진행합니다.\n")
+            # Optuna가 없으면 기본값 사용
+            best_params = get_default_hyperparameters()
         else:
+            # Optuna로 최적화 실행
             best_params = optimize_hyperparameters(X, y, labels, feat_names, n_trials=N_TRIALS)
+            # Optuna 최적화 결과 저장
+            if best_params:
+                save_best_hyperparameters(best_params)
+    else:
+        # Optuna 사용 안 함 (USE_OPTUNA=False)
+        # JSON 파일에서 로드 시도
+        best_params = load_best_hyperparameters()
+        
+        # JSON 파일이 없으면 기본값 사용
+        if best_params is None:
+            print("\n📋 JSON 파일 없음 → Config의 기본 하이퍼파라미터 사용")
+            best_params = get_default_hyperparameters()
+            print("기본 하이퍼파라미터:")
+            for key, value in best_params.items():
+                print(f"   - {key}: {value}")
     
     # 최종 학습 실행
     model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(

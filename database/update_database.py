@@ -621,6 +621,129 @@ def update_trends_database(
 
 
 # =========================
+# 기상 데이터 업데이트 함수들
+# =========================
+
+def update_weather_database(
+    weather_csv_path: str = None,
+    db_name: str = "influenza",
+    table_name: str = "weather_data"
+):
+    """
+    기상 데이터를 PostgreSQL 데이터베이스에 업로드
+    
+    Args:
+        weather_csv_path: weather_for_influenza.csv 파일 경로
+        db_name: PostgreSQL 데이터베이스 이름
+        table_name: 테이블 이름
+    
+    Returns:
+        bool: 성공 여부
+    """
+    print("\n" + "="*60)
+    print("🌤️  기상 데이터 PostgreSQL 업데이트")
+    print("="*60)
+    
+    # 기본 경로 설정
+    if weather_csv_path is None:
+        weather_csv_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "data", "weather_for_influenza.csv"
+        )
+    
+    # 파일 존재 확인
+    if not os.path.exists(weather_csv_path):
+        print(f"\n❌ 기상 데이터 파일을 찾을 수 없습니다: {weather_csv_path}")
+        print("   먼저 ClimODE.py를 실행하여 기상 데이터를 생성하세요:")
+        print("   python ClimODE.py")
+        return False
+    
+    # CSV 로드
+    print(f"\n📂 기상 데이터 로드: {weather_csv_path}")
+    df = pd.read_csv(weather_csv_path)
+    print(f"   • 총 {len(df)}건의 데이터")
+    print(f"   • 컬럼: {list(df.columns)}")
+    print(f"   • 기간: {df['year'].min()}년 {df['week'].min()}주 ~ {df['year'].max()}년 {df['week'].max()}주")
+    
+    # PostgreSQL 연결
+    print(f"\n💾 PostgreSQL '{db_name}' 데이터베이스에 저장 중...")
+    db = TimeSeriesDB(dbname=db_name)
+    
+    try:
+        db.connect()
+        print(f"   ✅ '{db_name}' 데이터베이스 연결 완료")
+    except Exception as e:
+        print(f"   ❌ 데이터베이스 연결 실패: {e}")
+        return False
+    
+    # 테이블 생성 (기존 테이블 삭제 후 재생성)
+    with db.conn.cursor() as cur:
+        # 기존 테이블 삭제
+        cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db.conn.commit()
+        print(f"   ✅ 기존 {table_name} 테이블 삭제 완료")
+        
+        # 새 테이블 생성 (컬럼 타입 자동 추론)
+        columns_def = []
+        for col in df.columns:
+            dtype = df[col].dtype
+            if col in ['year', 'week']:
+                sql_type = 'INTEGER'
+            elif dtype in ['int64', 'int32']:
+                sql_type = 'INTEGER'
+            elif dtype in ['float64', 'float32']:
+                sql_type = 'REAL'
+            else:
+                sql_type = 'TEXT'
+            columns_def.append(f'"{col}" {sql_type}')
+        
+        # PRIMARY KEY 추가
+        create_sql = f"""
+            CREATE TABLE {table_name} (
+                {', '.join(columns_def)},
+                PRIMARY KEY (year, week)
+            )
+        """
+        cur.execute(create_sql)
+        db.conn.commit()
+        print(f"   ✅ {table_name} 테이블 생성 완료 ({len(columns_def)}개 컬럼)")
+    
+    # 데이터 삽입
+    df = df.where(pd.notnull(df), None)
+    columns = list(df.columns)
+    values = df.values.tolist()
+    placeholders = ','.join(['%s'] * len(columns))
+    col_names = ','.join([f'"{col}"' for col in columns])
+    sql = f'INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})'
+    
+    with db.conn.cursor() as cur:
+        import psycopg2.extras
+        psycopg2.extras.execute_batch(cur, sql, values)
+    db.conn.commit()
+    
+    print(f"   ✅ {table_name}에 {len(df)}건 삽입 완료")
+    
+    # 검증
+    with db.conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cur.fetchone()[0]
+        print(f"\n   📊 검증: {table_name} 테이블에 {count}건 저장됨")
+    
+    db.close()
+    
+    print("\n" + "="*60)
+    print("✅ 기상 데이터 업데이트 완료!")
+    print("="*60)
+    print(f"\n기상 데이터:")
+    print(f"  • 데이터베이스: {db_name}")
+    print(f"  • 테이블: {table_name}")
+    print(f"  • 데이터 건수: {len(df)}")
+    print(f"  • 컬럼: {list(df.columns)}")
+    
+    return True
+
+
+# =========================
 # 메인 실행 부분
 # =========================
 
@@ -641,6 +764,17 @@ if __name__ == "__main__":
         print("   GFID_CLIENT_ID=your_client_id")
         print("   GFID_CLIENT_SECRET=your_client_secret")
     
+    # 기상 데이터 파일 확인
+    weather_csv_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "weather_for_influenza.csv"
+    )
+    # 현재 디렉토리에서 실행할 때를 위한 대안 경로
+    if not os.path.exists(weather_csv_path):
+        weather_csv_path = "data/weather_for_influenza.csv"
+    
+    print(f"  • weather_for_influenza.csv 존재: {os.path.exists(weather_csv_path)}")
+    
     # 사용자 확인
     print("\n다음 작업을 수행합니다:")
     print("\n[1단계] 인플루엔자 데이터 업데이트 (influenza DB)")
@@ -650,9 +784,13 @@ if __name__ == "__main__":
     print("  1-4. PostgreSQL influenza DB에 저장")
     print("  1-5. CSV로 백업 (merged_influenza_data.csv)")
     
+    print("\n[2단계] 기상 데이터 업데이트 (influenza DB)")
+    print("  2-1. data/weather_for_influenza.csv 로드")
+    print("  2-2. PostgreSQL weather_data 테이블에 저장")
+    
     # 트렌드 데이터는 현재 비활성화 (API가 parsedData를 반환하지 않음)
     # 나중에 API가 수정되면 다시 활성화 가능
-    print("\n[2단계] 트렌드 데이터 업데이트 (현재 비활성화)")
+    print("\n[3단계] 트렌드 데이터 업데이트 (현재 비활성화)")
     print("  ⚠️  트렌드 API가 메타데이터만 반환하여 실제 데이터 수집 불가")
     print("  ⚠️  API 수정 후 다시 활성화 예정")
     
@@ -660,7 +798,7 @@ if __name__ == "__main__":
     
     if response == 'y':
         success_count = 0
-        total_steps = 1  # 현재는 인플루엔자 데이터만 업데이트
+        total_steps = 2  # 인플루엔자 데이터 + 기상 데이터
         
         # 1단계: 인플루엔자 데이터 업데이트
         print("\n" + "="*60)
@@ -679,11 +817,27 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
         
-        # 2단계: 트렌드 데이터 업데이트 (현재 비활성화)
+        # 2단계: 기상 데이터 업데이트
+        print("\n" + "="*60)
+        print("2단계: 기상 데이터 업데이트")
+        print("="*60)
+        try:
+            if update_weather_database(
+                weather_csv_path=weather_csv_path if os.path.exists(weather_csv_path) else None,
+                db_name="influenza",
+                table_name="weather_data"
+            ):
+                success_count += 1
+        except Exception as e:
+            print(f"\n❌ 기상 데이터 업데이트 실패: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # 3단계: 트렌드 데이터 업데이트 (현재 비활성화)
         # API가 parsedData를 반환하지 않아 실제 데이터 수집 불가
         # 나중에 API가 수정되면 아래 주석을 해제하여 활성화
         print("\n" + "="*60)
-        print("2단계: 트렌드 데이터 업데이트 (건너뜀)")
+        print("3단계: 트렌드 데이터 업데이트 (건너뜀)")
         print("="*60)
         print("\n⚠️  트렌드 데이터 업데이트가 비활성화되어 있습니다.")
         print("   현재 API가 메타데이터만 반환하여 실제 데이터를 수집할 수 없습니다.")
@@ -710,11 +864,12 @@ if __name__ == "__main__":
             print("\n✅ 데이터베이스 업데이트 완료!")
             print("\n다음 명령어로 모델을 실행할 수 있습니다:")
             print("  python patchTST.py")
-            print("\n생성된 파일:")
+            print("\n생성된 파일/테이블:")
             if os.path.exists('merged_influenza_data.csv'):
                 print("  ✓ merged_influenza_data.csv (인플루엔자 데이터)")
-            if os.path.exists('trends_data.csv'):
-                print("  ✓ trends_data.csv (트렌드 데이터)")
+            print("  ✓ PostgreSQL influenza DB:")
+            print("      - influenza_data 테이블 (ILI, 백신률 등)")
+            print("      - weather_data 테이블 (최저기온, 최고기온, 습도)")
         else:
             print("\n❌ 데이터베이스 업데이트 실패")
             print("   오류 메시지를 확인하고 다시 시도하세요.")
