@@ -1,0 +1,163 @@
+
+[W&B] 실험 기록 시작
+  - project: influenza-patchtst  |  run name: Influenza_PatchTST_PatchTST_influenza_ftMS_sl336_pl96_dm128_nh16_el3_patch16_stride8
+  - config: ['random_seed', 'is_training', 'model_id', 'model', 'data', 'root_path', 'data_path', 'features', 'target', 'freq', 'checkpoints', 'seq_len', 'label_len', 'pred_len', 'fc_dropout', 'head_dropout', 'patch_len', 'stride', 'padding_patch', 'revin', 'affine', 'subtract_last', 'decomposition', 'kernel_size', 'individual', 'enc_in', 'dec_in', 'c_out', 'd_model', 'n_heads', 'e_layers', 'd_layers', 'd_ff', 'dropout', 'embed', 'num_workers', 'train_epochs', 'batch_size', 'patience', 'learning_rate', 'des', 'loss', 'lradj', 'pct_start', 'use_amp', 'use_gpu', 'gpu', 'use_multi_gpu', 'devices', 'device_ids', 'output_attention']
+
+[2/4] 학습
+Use CPU
+Epoch [1/10] Step [0/12] Loss: 0.8007026 LR: 4.107190e-06
+Epoch [1/10] Step [1/12] Loss: 0.7605650 LR: 4.428281e-06
+Epoch [1/10] Step [2/12] Loss: 1.1264092 LR: 4.961838e-06
+Epoch [1/10] Step [3/12] Loss: 0.7840407 LR: 5.705480e-06
+Epoch [1/10] Step [4/12] Loss: 1.0653371 LR: 6.655884e-06
+Epoch [1/10] Step [5/12] Loss: 0.9368865 LR: 7.808805e-06
+Epoch [1/10] Step [6/12] Loss: 0.9564238 LR: 9.159096e-06
+Epoch [1/10] Step [7/12] Loss: 0.8711943 LR: 1.070072e-05
+Epoch [1/10] Step [8/12] Loss: 1.0585811 LR: 1.242681e-05
+Epoch [1/10] Step [9/12] Loss: 0.8326693 LR: 1.432963e-05
+Epoch [1/10] Step [10/12] Loss: 0.9273483 LR: 1.640070e-05
+Epoch [1/10] Step [11/12] Loss: 1.0087498 LR: 1.863076e-05
+Epoch: 1 | Train Loss: 0.9274090 Vali Loss: 1.5695262 Test Loss: 2.5430722 | Time: 21.02s
+  [W&B] step=1 | train_loss=0.927409 val_loss=1.569526 test_loss=2.543072 epoch_time=21.02s
+Validation loss decreased (inf --> 1.569526). Saving model ...
+Epoch [2/10] Step [0/12] Loss: 0.9151886 LR: 2.100986e-05
+Epoch [2/10] Step [1/12] Loss: 0.9809177 LR: 2.352737e-05
+Epoch [2/10] Step [2/12] Loss: 0.7718801 LR: 2.617205e-05
+Epoch [2/10] Step [3/12] Loss: 0.7650997 LR: 2.893208e-05
+Epoch [2/10] Step [4/12] Loss: 0.7432626 LR: 3.179513e-05
+Epoch [2/10] Step [5/12] Loss: 0.8795404 LR: 3.474843e-05
+Epoch [2/10] Step [6/12] Loss: 0.8310719 LR: 3.777877e-05
+Epoch [2/10] Step [7/12] Loss: 0.7623063 LR: 4.087263e-05
+Epoch [2/10] Step [8/12] Loss: 0.7489676 LR: 4.401619e-05
+Epoch [2/10] Step [9/12] Loss: 0.6045604 LR: 4.719541e-05
+Epoch [2/10] Step [10/12] Loss: 0.7764001 LR: 5.039608e-05
+Epoch [2/10] Step [11/12] Loss: 0.7231216 LR: 5.360392e-05
+Epoch: 2 | Train Loss: 0.7918598 Vali Loss: 1.3344467 Test Loss: 2.0117288 | Time: 20.10s
+  [W&B] step=2 | train_loss=0.791860 val_loss=1.334447 test_loss=2.011729 epoch_time=20.10s
+Validation loss decreased (1.569526 --> 1.334447). Saving model ...
+Epoch [3/10] Step [0/12] Loss: 0.7767794 LR: 5.680459e-05
+Epoch [3/10] Step [1/12] Loss: 0.8081687 LR: 5.998381e-05
+Epoch [3/10] Step [2/12] Loss: 0.6079867 LR: 6.312737e-05
+Epoch [3/10] Step [3/12] Loss: 0.5872729 LR: 6.622123e-05
+Epoch [3/10] Step [4/12] Loss: 0.6957567 LR: 6.925157e-05
+Epoch [3/10] Step [5/12] Loss: 0.6408617 LR: 7.220487e-05
+Epoch [3/10] Step [6/12] Loss: 0.6843522 LR: 7.506792e-05
+Epoch [3/10] Step [7/12] Loss: 0.5516706 LR: 7.782795e-05
+Epoch [3/10] Step [8/12] Loss: 0.7687395 LR: 8.047263e-05
+Epoch [3/10] Step [9/12] Loss: 0.4905733 LR: 8.299014e-05
+Epoch [3/10] Step [10/12] Loss: 0.5651838 LR: 8.536924e-05
+Epoch [3/10] Step [11/12] Loss: 0.5676329 LR: 8.759930e-05
+Epoch: 3 | Train Loss: 0.6454149 Vali Loss: 1.1729014 Test Loss: 1.8206984 | Time: 19.42s
+  [W&B] step=3 | train_loss=0.645415 val_loss=1.172901 test_loss=1.820698 epoch_time=19.42s
+Validation loss decreased (1.334447 --> 1.172901). Saving model ...
+Epoch [4/10] Step [0/12] Loss: 0.6254354 LR: 8.967037e-05
+Epoch [4/10] Step [1/12] Loss: 0.6233560 LR: 9.157319e-05
+Epoch [4/10] Step [2/12] Loss: 0.5804136 LR: 9.329928e-05
+Epoch [4/10] Step [3/12] Loss: 0.5117655 LR: 9.484090e-05
+Epoch [4/10] Step [4/12] Loss: 0.5970209 LR: 9.619119e-05
+Epoch [4/10] Step [5/12] Loss: 0.6017182 LR: 9.734412e-05
+Epoch [4/10] Step [6/12] Loss: 0.5012066 LR: 9.829452e-05
+Epoch [4/10] Step [7/12] Loss: 0.5657618 LR: 9.903816e-05
+Epoch [4/10] Step [8/12] Loss: 0.6206923 LR: 9.957172e-05
+Epoch [4/10] Step [9/12] Loss: 0.5503579 LR: 9.989281e-05
+Epoch [4/10] Step [10/12] Loss: 0.6572493 LR: 1.000000e-04
+Epoch [4/10] Step [11/12] Loss: 0.4124119 LR: 9.995241e-05
+Epoch: 4 | Train Loss: 0.5706158 Vali Loss: 1.1164289 Test Loss: 1.9556572 | Time: 19.37s
+  [W&B] step=4 | train_loss=0.570616 val_loss=1.116429 test_loss=1.955657 epoch_time=19.37s
+Validation loss decreased (1.172901 --> 1.116429). Saving model ...
+Epoch [5/10] Step [0/12] Loss: 0.5072396 LR: 9.980974e-05
+Epoch [5/10] Step [1/12] Loss: 0.6205382 LR: 9.957224e-05
+Epoch [5/10] Step [2/12] Loss: 0.3880161 LR: 9.924039e-05
+Epoch [5/10] Step [3/12] Loss: 0.6384966 LR: 9.881481e-05
+Epoch [5/10] Step [4/12] Loss: 0.5204841 LR: 9.829630e-05
+Epoch [5/10] Step [5/12] Loss: 0.5994837 LR: 9.768586e-05
+Epoch [5/10] Step [6/12] Loss: 0.5231006 LR: 9.698464e-05
+Epoch [5/10] Step [7/12] Loss: 0.5502850 LR: 9.619399e-05
+Epoch [5/10] Step [8/12] Loss: 0.4994039 LR: 9.531541e-05
+Epoch [5/10] Step [9/12] Loss: 0.4540579 LR: 9.435056e-05
+Epoch [5/10] Step [10/12] Loss: 0.5448720 LR: 9.330130e-05
+Epoch [5/10] Step [11/12] Loss: 0.4921884 LR: 9.216960e-05
+Epoch: 5 | Train Loss: 0.5281805 Vali Loss: 1.1416040 Test Loss: 2.0022739 | Time: 19.76s
+  [W&B] step=5 | train_loss=0.528181 val_loss=1.141604 test_loss=2.002274 epoch_time=19.76s
+Epoch [6/10] Step [0/12] Loss: 0.5085682 LR: 9.095764e-05
+Epoch [6/10] Step [1/12] Loss: 0.5086467 LR: 8.966771e-05
+Epoch [6/10] Step [2/12] Loss: 0.6011219 LR: 8.830227e-05
+Epoch [6/10] Step [3/12] Loss: 0.5097023 LR: 8.686392e-05
+Epoch [6/10] Step [4/12] Loss: 0.6379567 LR: 8.535540e-05
+Epoch [6/10] Step [5/12] Loss: 0.4635235 LR: 8.377958e-05
+Epoch [6/10] Step [6/12] Loss: 0.4685488 LR: 8.213945e-05
+Epoch [6/10] Step [7/12] Loss: 0.4914975 LR: 8.043815e-05
+Epoch [6/10] Step [8/12] Loss: 0.4735664 LR: 7.867891e-05
+Epoch [6/10] Step [9/12] Loss: 0.3441066 LR: 7.686507e-05
+Epoch [6/10] Step [10/12] Loss: 0.5533765 LR: 7.500010e-05
+Epoch [6/10] Step [11/12] Loss: 0.5260451 LR: 7.308754e-05
+Epoch: 6 | Train Loss: 0.5072217 Vali Loss: 1.1602433 Test Loss: 1.9524237 | Time: 19.64s
+  [W&B] step=6 | train_loss=0.507222 val_loss=1.160243 test_loss=1.952424 epoch_time=19.64s
+Epoch [7/10] Step [0/12] Loss: 0.5581858 LR: 7.113103e-05
+Epoch [7/10] Step [1/12] Loss: 0.5780914 LR: 6.913430e-05
+Epoch [7/10] Step [2/12] Loss: 0.5189122 LR: 6.710114e-05
+Epoch [7/10] Step [3/12] Loss: 0.5424742 LR: 6.503543e-05
+Epoch [7/10] Step [4/12] Loss: 0.4898723 LR: 6.294110e-05
+Epoch [7/10] Step [5/12] Loss: 0.4121540 LR: 6.082214e-05
+Epoch [7/10] Step [6/12] Loss: 0.3912885 LR: 5.868257e-05
+Epoch [7/10] Step [7/12] Loss: 0.4612286 LR: 5.652648e-05
+Epoch [7/10] Step [8/12] Loss: 0.5545281 LR: 5.435797e-05
+Epoch [7/10] Step [9/12] Loss: 0.4588868 LR: 5.218116e-05
+Epoch [7/10] Step [10/12] Loss: 0.3779940 LR: 5.000020e-05
+Epoch [7/10] Step [11/12] Loss: 0.4249358 LR: 4.781924e-05
+Epoch: 7 | Train Loss: 0.4807126 Vali Loss: 1.1702363 Test Loss: 1.9564401 | Time: 19.54s
+  [W&B] step=7 | train_loss=0.480713 val_loss=1.170236 test_loss=1.956440 epoch_time=19.54s
+Epoch [8/10] Step [0/12] Loss: 0.3573026 LR: 4.564243e-05
+Epoch [8/10] Step [1/12] Loss: 0.5151960 LR: 4.347392e-05
+Epoch [8/10] Step [2/12] Loss: 0.4096602 LR: 4.131783e-05
+Epoch [8/10] Step [3/12] Loss: 0.4601134 LR: 3.917826e-05
+Epoch [8/10] Step [4/12] Loss: 0.3830015 LR: 3.705930e-05
+Epoch [8/10] Step [5/12] Loss: 0.5609272 LR: 3.496497e-05
+Epoch [8/10] Step [6/12] Loss: 0.5034889 LR: 3.289926e-05
+Epoch [8/10] Step [7/12] Loss: 0.4860032 LR: 3.086610e-05
+Epoch [8/10] Step [8/12] Loss: 0.5286441 LR: 2.886937e-05
+Epoch [8/10] Step [9/12] Loss: 0.5176389 LR: 2.691286e-05
+Epoch [8/10] Step [10/12] Loss: 0.4634697 LR: 2.500030e-05
+Epoch [8/10] Step [11/12] Loss: 0.4749846 LR: 2.313533e-05
+Epoch: 8 | Train Loss: 0.4717025 Vali Loss: 1.1916757 Test Loss: 1.9453134 | Time: 19.41s
+  [W&B] step=8 | train_loss=0.471703 val_loss=1.191676 test_loss=1.945313 epoch_time=19.41s
+Epoch [9/10] Step [0/12] Loss: 0.4594378 LR: 2.132149e-05
+Epoch [9/10] Step [1/12] Loss: 0.3236642 LR: 1.956225e-05
+Epoch [9/10] Step [2/12] Loss: 0.5163823 LR: 1.786095e-05
+Epoch [9/10] Step [3/12] Loss: 0.4527504 LR: 1.622082e-05
+Epoch [9/10] Step [4/12] Loss: 0.4646602 LR: 1.464500e-05
+Epoch [9/10] Step [5/12] Loss: 0.4862643 LR: 1.313648e-05
+Epoch [9/10] Step [6/12] Loss: 0.5074903 LR: 1.169813e-05
+Epoch [9/10] Step [7/12] Loss: 0.5045298 LR: 1.033269e-05
+Epoch [9/10] Step [8/12] Loss: 0.5563677 LR: 9.042762e-06
+Epoch [9/10] Step [9/12] Loss: 0.4217228 LR: 7.830796e-06
+Epoch [9/10] Step [10/12] Loss: 0.4608852 LR: 6.699103e-06
+Epoch [9/10] Step [11/12] Loss: 0.4965720 LR: 5.649836e-06
+Epoch: 9 | Train Loss: 0.4708939 Vali Loss: 1.2095782 Test Loss: 1.9597370 | Time: 19.65s
+  [W&B] step=9 | train_loss=0.470894 val_loss=1.209578 test_loss=1.959737 epoch_time=19.65s
+Epoch [10/10] Step [0/12] Loss: 0.3890997 LR: 4.684992e-06
+Epoch [10/10] Step [1/12] Loss: 0.5538067 LR: 3.806408e-06
+Epoch [10/10] Step [2/12] Loss: 0.5391139 LR: 3.015757e-06
+Epoch [10/10] Step [3/12] Loss: 0.4975590 LR: 2.314543e-06
+Epoch [10/10] Step [4/12] Loss: 0.3904980 LR: 1.704102e-06
+Epoch [10/10] Step [5/12] Loss: 0.3974441 LR: 1.185595e-06
+Epoch [10/10] Step [6/12] Loss: 0.4483752 LR: 7.600093e-07
+Epoch [10/10] Step [7/12] Loss: 0.5271429 LR: 4.281552e-07
+Epoch [10/10] Step [8/12] Loss: 0.4135369 LR: 1.906643e-07
+Epoch [10/10] Step [9/12] Loss: 0.4815500 LR: 4.798873e-08
+Epoch [10/10] Step [10/12] Loss: 0.5754158 LR: 4.000000e-10
+Epoch [10/10] Step [11/12] Loss: 0.3884336 LR: 4.798873e-08
+Epoch: 10 | Train Loss: 0.4668313 Vali Loss: 1.1909016 Test Loss: 1.9544175 | Time: 20.09s
+  [W&B] step=10 | train_loss=0.466831 val_loss=1.190902 test_loss=1.954418 epoch_time=20.09s
+
+[3/4] 테스트 및 메트릭 계산
+==================================================
+예측 결과 (Test Set)
+==================================================
+MSE: 1.821222  MAE: 0.860503  RSE: 0.918068
+==================================================
+[W&B] test 메트릭 기록: test/MSE=1.821222 test/MAE=0.860503 test/RSE=0.918068
+
+[4/4] results.png 생성
+Saved plot -> results.png
+[W&B] results_plot (results.png) 업로드

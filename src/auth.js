@@ -3,11 +3,11 @@
 // const {
 // 	SERVER_URL,
 // 	REALM,
-// 	CLIENT_ID,
-// 	CLIENT_SECRET
+// 	GFID_CLIENT_ID,
+// 	GFID_CLIENT_SECRET
 // } = process.env;
 
-// if (!SERVER_URL || !REALM || !CLIENT_ID) {
+// if (!SERVER_URL || !REALM || !GFID_CLIENT_ID) {
 // 	console.warn('Missing Keycloak env vars. Check .env or .env.example');
 // }
 
@@ -20,8 +20,8 @@
 // 	const tokenUrl = `${SERVER_URL.replace(/\/$/, '')}/realms/${REALM}/protocol/openid-connect/token`;
 // 	const params = new URLSearchParams();
 // 	params.append('grant_type', 'client_credentials');
-// 	params.append('client_id', CLIENT_ID);
-// 	if (CLIENT_SECRET) params.append('client_secret', CLIENT_SECRET);
+// 	params.append('GFID_CLIENT_ID', GFID_CLIENT_ID);
+// 	if (GFID_CLIENT_SECRET) params.append('GFID_CLIENT_SECRET', GFID_CLIENT_SECRET);
 
 // 	try {
 // 		const resp = await axios.post(tokenUrl, params.toString(), {
@@ -80,11 +80,11 @@ const https = require('https');
 const {
 	SERVER_URL,
 	REALM,
-	CLIENT_ID,
-	CLIENT_SECRET
+	GFID_CLIENT_ID,
+	GFID_CLIENT_SECRET
 } = process.env;
 
-if (!SERVER_URL || !REALM || !CLIENT_ID) {
+if (!SERVER_URL || !REALM || !GFID_CLIENT_ID) {
 	console.warn('Missing Keycloak env vars. Check .env or .env.example');
 }
 
@@ -102,8 +102,8 @@ async function fetchToken() {
 	const tokenUrl = `${SERVER_URL.replace(/\/$/, '')}/realms/${REALM}/protocol/openid-connect/token`;
 	const params = new URLSearchParams();
 	params.append('grant_type', 'client_credentials');
-	params.append('client_id', CLIENT_ID);
-	if (CLIENT_SECRET) params.append('client_secret', CLIENT_SECRET);
+	params.append('GFID_CLIENT_ID', GFID_CLIENT_ID);
+	if (GFID_CLIENT_SECRET) params.append('GFID_CLIENT_SECRET', GFID_CLIENT_SECRET);
 
 	try {
 		const resp = await axios.post(tokenUrl, params.toString(), {

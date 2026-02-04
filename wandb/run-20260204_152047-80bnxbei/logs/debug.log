@@ -1,0 +1,24 @@
+2026-02-04 15:20:47,529 INFO    MainThread:54226 [wandb_setup.py:_flush():81] Current SDK version is 0.24.1
+2026-02-04 15:20:47,529 INFO    MainThread:54226 [wandb_setup.py:_flush():81] Configure stats pid to 54226
+2026-02-04 15:20:47,529 INFO    MainThread:54226 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-02-04 15:20:47,530 INFO    MainThread:54226 [wandb_init.py:setup_run_log_directory():717] Logging user logs to /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/wandb/run-20260204_152047-80bnxbei/logs/debug.log
+2026-02-04 15:20:47,530 INFO    MainThread:54226 [wandb_init.py:setup_run_log_directory():718] Logging internal logs to /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/wandb/run-20260204_152047-80bnxbei/logs/debug-internal.log
+2026-02-04 15:20:47,530 INFO    MainThread:54226 [wandb_init.py:init():844] calling init triggers
+2026-02-04 15:20:47,530 INFO    MainThread:54226 [wandb_init.py:init():849] wandb.init called with sweep_config: {}
+config: {'random_seed': None, 'is_training': 1, 'model_id': 'Influenza_PatchTST', 'model': 'PatchTST', 'data': 'influenza', 'root_path': '.', 'data_path': 'merged_influenza_data.csv', 'features': 'MS', 'target': 'ili', 'freq': 'w', 'checkpoints': './checkpoints/', 'seq_len': 336, 'label_len': 48, 'pred_len': 96, 'fc_dropout': 0.2, 'head_dropout': 0.0, 'patch_len': 16, 'stride': 8, 'padding_patch': 'end', 'revin': 1, 'affine': 0, 'subtract_last': 0, 'decomposition': 0, 'kernel_size': 25, 'individual': 0, 'enc_in': 10, 'dec_in': 10, 'c_out': 10, 'd_model': 128, 'n_heads': 16, 'e_layers': 3, 'd_layers': 1, 'd_ff': 256, 'dropout': 0.2, 'embed': 'timeF', 'num_workers': 0, 'train_epochs': 10, 'batch_size': 128, 'patience': 20, 'learning_rate': 0.0001, 'des': 'Exp', 'loss': 'mse', 'lradj': 'TST', 'pct_start': 0.4, 'use_amp': False, 'use_gpu': False, 'gpu': 0, 'use_multi_gpu': False, 'devices': '0,1,2,3', 'device_ids': [0], 'output_attention': False, '_wandb': {}}
+2026-02-04 15:20:47,530 INFO    MainThread:54226 [wandb_init.py:init():892] starting backend
+2026-02-04 15:20:47,938 INFO    MainThread:54226 [wandb_init.py:init():895] sending inform_init request
+2026-02-04 15:20:47,965 INFO    MainThread:54226 [wandb_init.py:init():903] backend started and connected
+2026-02-04 15:20:47,983 INFO    MainThread:54226 [wandb_init.py:init():973] updated telemetry
+2026-02-04 15:20:47,995 INFO    MainThread:54226 [wandb_init.py:init():997] communicating run to backend with 90.0 second timeout
+2026-02-04 15:20:48,732 INFO    MainThread:54226 [wandb_init.py:init():1042] starting run threads in backend
+2026-02-04 15:20:48,901 INFO    MainThread:54226 [wandb_run.py:_console_start():2529] atexit reg
+2026-02-04 15:20:48,901 INFO    MainThread:54226 [wandb_run.py:_redirect():2377] redirect: wrap_raw
+2026-02-04 15:20:48,901 INFO    MainThread:54226 [wandb_run.py:_redirect():2446] Wrapping output streams.
+2026-02-04 15:20:48,901 INFO    MainThread:54226 [wandb_run.py:_redirect():2469] Redirects installed.
+2026-02-04 15:20:48,903 INFO    MainThread:54226 [wandb_init.py:init():1082] run started, returning control to user process
+2026-02-04 15:24:48,947 INFO    MainThread:54226 [wandb_run.py:_finish():2295] finishing run suuuuwimmer-jeonbuk-national-university/influenza-patchtst/80bnxbei
+2026-02-04 15:24:48,948 INFO    MainThread:54226 [wandb_run.py:_atexit_cleanup():2494] got exitcode: 0
+2026-02-04 15:24:48,949 INFO    MainThread:54226 [wandb_run.py:_restore():2476] restore
+2026-02-04 15:24:48,949 INFO    MainThread:54226 [wandb_run.py:_restore():2482] restore done
+2026-02-04 15:24:50,186 INFO    MainThread:54226 [wandb_run.py:_footer_sync_info():3871] logging synced files

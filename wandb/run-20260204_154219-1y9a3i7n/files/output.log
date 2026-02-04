@@ -1,0 +1,63 @@
+
+[W&B] 실험 기록 시작
+  - project: influenza-patchtst  |  run name: Influenza_PatchTST_PatchTST_influenza_ftMS_sl365_pl31_dm128_nh16_el3_patch7_stride3
+  - config: ['random_seed', 'is_training', 'model_id', 'model', 'data', 'root_path', 'data_path', 'features', 'target', 'freq', 'checkpoints', 'seq_len', 'label_len', 'pred_len', 'fc_dropout', 'head_dropout', 'patch_len', 'stride', 'padding_patch', 'revin', 'affine', 'subtract_last', 'decomposition', 'kernel_size', 'individual', 'enc_in', 'dec_in', 'c_out', 'd_model', 'n_heads', 'e_layers', 'd_layers', 'd_ff', 'dropout', 'embed', 'num_workers', 'train_epochs', 'batch_size', 'patience', 'learning_rate', 'des', 'loss', 'lradj', 'pct_start', 'use_amp', 'use_gpu', 'gpu', 'use_multi_gpu', 'devices', 'device_ids', 'output_attention']
+
+[2/4] 학습
+Use CPU
+Traceback (most recent call last):
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1238, in <module>
+    main()
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1187, in main
+    exp.train(setting)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1067, in train
+    outputs = self.model(batch_x)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1002, in forward
+    x = self.model(x)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 934, in forward
+    z = self.revin_layer(z, 'norm')
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 719, in forward
+    x = self._normalize(x)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 739, in _normalize
+    x = x * self.affine_weight + self.affine_bias
+RuntimeError: The size of tensor a (9) must match the size of tensor b (10) at non-singleton dimension 2
+Traceback (most recent call last):
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1238, in <module>
+    main()
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1187, in main
+    exp.train(setting)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1067, in train
+    outputs = self.model(batch_x)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 1002, in forward
+    x = self.model(x)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 934, in forward
+    z = self.revin_layer(z, 'norm')
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/Users/suyeong/miniconda3/envs/pydev310/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 719, in forward
+    x = self._normalize(x)
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/origin_patchTST.py", line 739, in _normalize
+    x = x * self.affine_weight + self.affine_bias
+RuntimeError: The size of tensor a (9) must match the size of tensor b (10) at non-singleton dimension 2
