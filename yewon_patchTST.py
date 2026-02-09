@@ -1,9 +1,101 @@
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 # PostgreSQL 데이터 로딩
 from database.db_utils import TimeSeriesDB, load_from_postgres
+
+
+def get_pandemic_mask(df: pd.DataFrame) -> pd.Series:
+    """팬데믹 기간(2020년 14주 ~ 2022년 22주) 마스크 반환."""
+    if 'year' not in df.columns or 'week' not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (
+        ((df['year'] == 2020) & (df['week'] >= 14)) |
+        (df['year'] == 2021) |
+        ((df['year'] == 2022) & (df['week'] <= 22))
+    )
+
+
+def interpolate_pandemic_period(df: pd.DataFrame, target_cols: list = None) -> pd.DataFrame:
+    """
+    팬데믹 기간(2020년 14주 ~ 2022년 22주) 데이터를 
+    2017~2019년 주차별 평균 패턴으로 보간
+    
+    Parameters:
+        df: 원본 DataFrame (year, week 컬럼 필수)
+        target_cols: 보간할 컬럼 목록 (None이면 모든 수치형 컬럼)
+    
+    Returns:
+        보간된 DataFrame
+    """
+    df = df.copy()
+    
+    # year, week 컬럼 확인
+    if 'year' not in df.columns or 'week' not in df.columns:
+        print("⚠️  year, week 컬럼이 없어 팬데믹 보간 건너뜀")
+        return df
+    
+    pandemic_mask = get_pandemic_mask(df)
+    
+    pandemic_count = pandemic_mask.sum()
+    if pandemic_count == 0:
+        print("ℹ️  팬데믹 기간 데이터 없음 - 보간 건너뜀")
+        return df
+    
+    print(f"\n🦠 팬데믹 기간 보간 처리")
+    print(f"   팬데믹 기간: 2020년 14주 ~ 2022년 22주 ({pandemic_count}건)")
+    
+    # 보간 대상 컬럼 결정 (year, week 제외한 수치형)
+    if target_cols is None:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        target_cols = [c for c in numeric_cols if c not in ['year', 'week']]
+    
+    if len(target_cols) == 0:
+        print("⚠️  보간할 수치형 컬럼이 없음")
+        return df
+    
+    print(f"   보간 대상 컬럼: {target_cols}")
+    
+    # 1단계: 팬데믹 기간 데이터를 NaN으로 설정
+    for col in target_cols:
+        df.loc[pandemic_mask, col] = np.nan
+    
+    # 2단계: 2017~2019년 정상 계절성 패턴 계산
+    pre_pandemic_mask = (df['year'] >= 2017) & (df['year'] <= 2019)
+    
+    weekly_patterns = {}
+    for col in target_cols:
+        df_pre = df[pre_pandemic_mask & df[col].notna()]
+        if len(df_pre) > 0:
+            weekly_patterns[col] = df_pre.groupby('week')[col].mean()
+        else:
+            weekly_patterns[col] = None
+    
+    # 3단계: 팬데믹 구간을 계절성 패턴으로 보간
+    interpolated_counts = {col: 0 for col in target_cols}
+    
+    for idx in df[pandemic_mask].index:
+        week_num = df.loc[idx, 'week']
+        
+        for col in target_cols:
+            pattern = weekly_patterns.get(col)
+            if pattern is not None:
+                if week_num in pattern.index:
+                    df.loc[idx, col] = pattern[week_num]
+                else:
+                    # 해당 주차 패턴이 없으면 전체 평균 사용
+                    df.loc[idx, col] = pattern.mean()
+                interpolated_counts[col] += 1
+    
+    # 결과 출력
+    for col, count in interpolated_counts.items():
+        if count > 0:
+            print(f"   ✅ {col}: {count}건 보간 완료")
+    
+    return df
+
 
 def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
     # 19-49세 연령 그룹만 필터링
@@ -30,18 +122,42 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
     # 선택된 컬럼만 남기기
     df = df[cols].copy()
 
-    # 결측값 처리
+    # 팬데믹 기간 보간 (2017-2019년 계절성 패턴 사용)
+    # year, week 외의 모든 수치형 컬럼에 적용
+    target_cols_for_pandemic = [c for c in cols if c not in ['year', 'week']]
+    df = interpolate_pandemic_period(df, target_cols=target_cols_for_pandemic)
+
+    # 나머지 결측값 처리 (팬데믹 보간 후 남은 NaN)
     print(f"\n🔧 전처리 결측값 처리 중...")
+    valid_cols = []
     for col in cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+        
+        # 전체가 NaN인 컬럼 체크
+        if df[col].isna().all():
+            print(f"   ❌ {col}: 전체 NaN - 피처에서 제외")
+            continue
+        
         if df[col].isna().any():
-            print(f"   {col}: {df[col].isna().sum()}개 결측값 처리")
+            nan_count = df[col].isna().sum()
+            nan_pct = nan_count / len(df) * 100
+            print(f"   {col}: {nan_count}개 ({nan_pct:.1f}%) 결측값 처리")
             df[col] = df[col].interpolate(method="linear").ffill().bfill()
             if df[col].isna().any():
-                df[col] = df[col].fillna(df[col].median())
+                fill_val = df[col].median() if not np.isnan(df[col].median()) else 0.0
+                df[col] = df[col].fillna(fill_val)
+        
+        valid_cols.append(col)
+    
+    if len(valid_cols) < len(cols):
+        removed = set(cols) - set(valid_cols)
+        print(f"   ⚠️  제거된 피처: {removed}")
+    
+    cols = valid_cols
+    df = df[cols].copy()  # 유효한 컬럼만 유지
 
     remaining_nans = df.isna().sum().sum()
-    print(f"   ✅ 결측값 처리 완료 (남은 NaN: {remaining_nans}개)")
+    print(f"   ✅ 결측값 처리 완료 (남은 NaN: {remaining_nans}개, 유효 피처: {len(cols)}개)")
 
     # 소수점 둘째 자리로 반올림
     df = df.round(2)
@@ -75,19 +191,19 @@ df = pd.read_csv(final_data_path)
 df_numeric = df[cols].copy()
 
 # 상관계수 행렬 (숫자형 데이터만)
-print(f"\n📊 상관계수 분석 중 (age_group 제외)...")
-corr = df_numeric.corr(method="pearson")
-print(corr)
+# print(f"\n📊 상관계수 분석 중 (age_group 제외)...")
+# corr = df_numeric.corr(method="pearson")
+# print(corr)
 
-plt.figure(figsize=(8,6))
-sns.heatmap(corr, annot=True, cmap="coolwarm", center=0)
-plt.title("Correlation Heatmap (Pearson) - Age 19-49")
-plt.tight_layout()
-plt.savefig("correlation_heatmap_19-49.png", dpi=150)
-print(f"✅ 상관계수 히트맵 저장: correlation_heatmap_19-49.png")
-plt.show()
+# plt.figure(figsize=(8,6))
+# sns.heatmap(corr, annot=True, cmap="coolwarm", center=0)
+# plt.title("Correlation Heatmap (Pearson) - Age 19-49")
+# plt.tight_layout()
+# plt.savefig("correlation_heatmap_19-49.png", dpi=150)
+# print(f"✅ 상관계수 히트맵 저장: correlation_heatmap_19-49.png")
+# plt.show()
 
-print("="*60 + "\n")
+# print("="*60 + "\n")
 
 # ili_patchtst_train_and_plot_v4_cnnmix.py
 # -*- coding: utf-8 -*-
@@ -134,7 +250,7 @@ SEED   = 42
 # =========================
 # Hyperparameters
 # =========================
-EPOCHS      = 100
+EPOCHS      = 200
 BATCH_SIZE  = 32        # 소규모 시계열에서도 안정적으로 학습되도록 약간 낮춤
 SEQ_LEN     = 12
 PRED_LEN    = 3
@@ -148,12 +264,18 @@ FF_DIM      = 64       # 피드포워드 차원 증가
 DROPOUT     = 0.2        # 약간 강화
 HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
+# tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
+# 디폴트값 : alpha 1.5, gain 1.2
+TANH_ALPHA = 20.0
+TANH_GAIN = 1.2
+TANH_LEARNABLE = True
+
 LR              = 3e-4    # 더 강한 모델이므로 학습률 감소
 WEIGHT_DECAY    = 5e-3
 PATIENCE        = 50      # 조기 종료 기준 단축 (더 강한 모델은 빠르게 수렴)
 WARMUP_EPOCHS   = 30      # Warmup 에포크 단축
 
-SCALER_TYPE     = "robust"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
+SCALER_TYPE     = "standard"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
 
 # 외생 특징 사용 모드: "auto"|"none"|"vax"|"resp"|"both"
 USE_EXOG        = "all"
@@ -323,7 +445,7 @@ def _norm_season_text(s: str) -> str:
 # =========================
 # data loader (multivariate-ready) - PostgreSQL용으로 수정
 # =========================
-def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, list, list]:
+def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, list, list]:   
     """
     PostgreSQL에서 로드한 데이터프레임을 모델 입력 형태로 변환
     
@@ -358,13 +480,37 @@ def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndar
     
     # 선택된 컬럼만 사용 (이미 상단에서 결측값 처리 완료)
     # 추가 확인 및 보간 (혹시 모를 NaN 대비)
+    valid_feat_names = []
     for c in feat_names:
         if c not in df.columns:
-            raise ValueError(f"컬럼 '{c}'가 df에 없습니다.")
+            print(f"   ⚠️  컬럼 '{c}'가 df에 없습니다. 건너뜀.")
+            continue
         df[c] = pd.to_numeric(df[c], errors="coerce")
+        
+        # 전체가 NaN인 컬럼 체크
+        if df[c].isna().all():
+            print(f"   ❌ {c}: 전체 NaN - 피처에서 제외")
+            continue
+        
         if df[c].isna().any():
-            print(f"   ⚠️  {c}: {df[c].isna().sum()}개 추가 결측값 발견 - 보간 처리")
-            df[c] = df[c].interpolate(method="linear", limit_direction="both").fillna(df[c].median())
+            nan_count = df[c].isna().sum()
+            print(f"   ⚠️  {c}: {nan_count}개 결측값 발견 - 보간 처리")
+            df[c] = df[c].interpolate(method="linear", limit_direction="both")
+            # 보간 후에도 남은 NaN은 0으로 채움 (median이 NaN일 수 있으므로)
+            if df[c].isna().any():
+                fill_val = df[c].median() if not np.isnan(df[c].median()) else 0.0
+                df[c] = df[c].fillna(fill_val)
+        
+        valid_feat_names.append(c)
+    
+    if len(valid_feat_names) == 0:
+        raise ValueError("사용 가능한 피처가 없습니다.")
+    
+    if len(valid_feat_names) < len(feat_names):
+        removed = set(feat_names) - set(valid_feat_names)
+        print(f"   ⚠️  제거된 피처: {removed}")
+    
+    feat_names = valid_feat_names
     
     # 라벨 생성 (인덱스 기반)
     labels = [f"idx_{i}" for i in range(len(df))]
@@ -410,6 +556,16 @@ class PatchTSTDataset(Dataset):
 # =========================
 # model (Multi-Scale CNN + TokenConvMixer + PatchTST + AttnPool)
 # =========================
+class ScaledTanh(nn.Module):
+    """tanh 출력에 스케일을 부여 (입력 스케일 alpha, 출력 스케일 gain)."""
+    def __init__(self, alpha: float = 1.0, gain: float = 1.0, learnable: bool = False):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.tensor(float(alpha)), requires_grad=learnable)
+        self.gain = nn.Parameter(torch.tensor(float(gain)), requires_grad=learnable)
+
+    def forward(self, x):
+        return torch.tanh(self.alpha * x) * self.gain
+
 class MultiScaleCNNPatchEmbed(nn.Module):
     """
     강화된 멀티스케일 CNN 패치 임베딩: 다양한 커널 크기와 dilated convolution으로
@@ -427,37 +583,37 @@ class MultiScaleCNNPatchEmbed(nn.Module):
         # Tanh 활성화: 극값(튀는 값)에 더 민감하게 반응 [-1, 1] 범위로 제약
         self.b1 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=1, padding=0, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.b3 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.b5 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=5, padding=2, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.b7 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=7, padding=3, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         
         # 분기 5-8: dilated convolution (넓은 수용장으로 이상치 포착)
         self.bd3_d1 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=3, padding=1, dilation=1, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.bd3_d2 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=3, padding=2, dilation=2, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.bd5_d2 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=5, padding=4, dilation=2, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
         self.bd3_d3 = nn.Sequential(
             nn.Conv1d(in_features, out_ch, kernel_size=3, padding=3, dilation=3, bias=False),
-            nn.Tanh()
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
         )
 
         self.bn   = nn.BatchNorm1d(d_model)

@@ -1,36 +1,124 @@
 import pandas as pd
-
-df = pd.read_csv("data/raw/merge_data.csv")
-
-# 필요한 컬럼만 선택
-cols = ["ili","vaccine_rate","case_count",
-        "wx_week_avg_temp","wx_week_avg_rain","wx_week_avg_humidity"]
-
-# 결측 처리
-df = df[cols].interpolate().fillna(method="bfill").fillna(method="ffill")
-
-# 상관계수 행렬
-corr = df.corr(method="pearson")
-print(corr)
-
 import seaborn as sns
 import matplotlib.pyplot as plt
-plt.figure(figsize=(8,6))
-sns.heatmap(corr, annot=True, cmap="coolwarm", center=0)
-plt.title("Correlation Heatmap (Pearson)")
-plt.show()
+
+# PostgreSQL 데이터 로딩
+from database.db_utils import TimeSeriesDB, load_from_postgres
+
+def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+    # 19-49세 연령 그룹만 필터링
+    if 'age_group' in df.columns:
+        print(f"\n🔍 연령 그룹 필터링: 19-49세만 선택")
+        print(f"   필터링 전: {len(df)}건")
+        df = df[df['age_group'] == '19-49세'].copy()
+        print(f"   필터링 후: {len(df)}건")
+    else:
+        print("⚠️  age_group 컬럼이 없습니다. 전체 데이터 사용")
+
+    # 필요한 컬럼만 선택 (age_group은 필터링용이므로 분석에서 제외)
+    available_cols = df.columns.tolist()
+    desired_cols = ["year", "week", "ili", "detection_rate"]
+
+    # 실제로 존재하는 컬럼만 선택
+    cols = [c for c in desired_cols if c in available_cols]
+    if len(cols) < len(desired_cols):
+        missing = set(desired_cols) - set(cols)
+        print(f"⚠️  누락된 컬럼: {missing}")
+
+    print(f"\n📋 선택된 컬럼 (상관계수/모델 입력용): {cols}")
+
+    # 선택된 컬럼만 남기기
+    df = df[cols].copy()
+
+    # 결측값 처리
+    print(f"\n🔧 전처리 결측값 처리 중...")
+    valid_cols = []
+    for col in cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        
+        # 전체가 NaN인 컬럼 체크
+        if df[col].isna().all():
+            print(f"   ❌ {col}: 전체 NaN - 피처에서 제외")
+            continue
+        
+        if df[col].isna().any():
+            nan_count = df[col].isna().sum()
+            nan_pct = nan_count / len(df) * 100
+            print(f"   {col}: {nan_count}개 ({nan_pct:.1f}%) 결측값 처리")
+            df[col] = df[col].interpolate(method="linear").ffill().bfill()
+            if df[col].isna().any():
+                fill_val = df[col].median() if not np.isnan(df[col].median()) else 0.0
+                df[col] = df[col].fillna(fill_val)
+        
+        valid_cols.append(col)
+    
+    if len(valid_cols) < len(cols):
+        removed = set(cols) - set(valid_cols)
+        print(f"   ⚠️  제거된 피처: {removed}")
+    
+    cols = valid_cols
+    df = df[cols].copy()  # 유효한 컬럼만 유지
+
+    remaining_nans = df.isna().sum().sum()
+    print(f"   ✅ 결측값 처리 완료 (남은 NaN: {remaining_nans}개, 유효 피처: {len(cols)}개)")
+
+    # 소수점 둘째 자리로 반올림
+    df = df.round(2)
+
+    return df, cols
+
+print("\n" + "="*60)
+print("📊 PostgreSQL에서 인플루엔자 데이터 로드")
+print("="*60)
+
+# PostgreSQL에서 인플루엔자 데이터 로드
+try:
+    df = load_from_postgres(table_name="influenza_data")
+    print(f"✅ PostgreSQL influenza_data 로드 완료: {df.shape}")
+    print(f"   컬럼: {list(df.columns)}")
+except Exception as e:
+    print(f"❌ PostgreSQL 로드 실패: {e}")
+    print("   CSV 파일로 대체 시도...")
+    df = pd.read_csv("merged_influenza_data.csv")
+    print(f"✅ CSV 파일 로드 완료: {df.shape}")
+
+df, cols = preprocess_data(df)
+
+# 전처리 결과 저장 후 입력 데이터로 사용
+final_data_path = "final_data.csv"
+df.to_csv(final_data_path, index=False, encoding="utf-8-sig")
+print(f"✅ 전처리 결과 저장: {final_data_path}")
+df = pd.read_csv(final_data_path)
+
+# 상관계수 분석용 데이터
+df_numeric = df[cols].copy()
+
+# 상관계수 행렬 (숫자형 데이터만)
+# print(f"\n📊 상관계수 분석 중 (age_group 제외)...")
+# corr = df_numeric.corr(method="pearson")
+# print(corr)
+
+# plt.figure(figsize=(8,6))
+# sns.heatmap(corr, annot=True, cmap="coolwarm", center=0)
+# plt.title("Correlation Heatmap (Pearson) - Age 19-49")
+# plt.tight_layout()
+# plt.savefig("correlation_heatmap_19-49.png", dpi=150)
+# print(f"✅ 상관계수 히트맵 저장: correlation_heatmap_19-49.png")
+# plt.show()
+
+# print("="*60 + "\n")
 
 # ili_patchtst_train_and_plot_v4_cnnmix.py
 # -*- coding: utf-8 -*-
 """
 Influenza ILI forecasting with PatchTST (multivariate-ready) + Multi-Scale CNN Patching
-- CSV: merged_influenza_vaccine_respiratory_filled.csv (fallbacks supported)
-- Auto-detect columns: 'ili' (target), 'vaccine_rate', 'respiratory_index'
-- Exogenous features selectable: USE_EXOG = 'auto'|'none'|'vax'|'resp'|'both'
+- Data Source: PostgreSQL influenza_data table (age_group: 19-49세 필터링)
+- Auto-detect columns: 'ili' (target), 'vaccine_rate', 'case_count'
+- Climate features: wx_week_avg_temp, wx_week_avg_rain, wx_week_avg_humidity
 - Train-only scaling: separate scaler_y (target) and scaler_x (features)
 - **Multi-Scale CNN Patch Embedding + TokenConvMixer → PatchTST-style encoder + Attention Pooling**
 - Loss: Huber; Optim: AdamW; Cosine LR + warmup; EarlyStopping
-- Saves: predictions CSV, last-window plot, test reconstruction, MAE curves
+- Saves: predictions CSV, last-window plot, test reconstruction, MAE curves, feature importance
 """
 
 import math
@@ -49,18 +137,8 @@ from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 # Paths & device
 # =========================
 BASE_DIR = Path.cwd()
-# 우선순위로 탐색 (새 파일 -> 구 파일들)
-CANDIDATE_CSVS = [
-    BASE_DIR / "data/processed/3_merged_influenza_vaccine_respiratory_weather_filled.csv",
-    BASE_DIR / "data/processed/3_merged_influenza_vaccine_respiratory_weather.csv",
-]
-def pick_csv_path():
-    for p in CANDIDATE_CSVS:
-        if p.exists():
-            return p
-    raise FileNotFoundError("No input CSV found among:\n" + "\n".join(map(str, CANDIDATE_CSVS)))
-
-CSV_PATH = pick_csv_path()
+# PostgreSQL에서 데이터를 로드하므로 CSV 경로는 불필요
+# (상단에서 이미 PostgreSQL에서 df 로드 완료)
 
 def pick_device():
     if torch.cuda.is_available():
@@ -75,31 +153,37 @@ SEED   = 42
 # =========================
 # Hyperparameters
 # =========================
-EPOCHS      = 100
-BATCH_SIZE  = 64        # 소규모 시계열에서도 안정적으로 학습되도록 약간 낮춤
+EPOCHS      = 200
+BATCH_SIZE  = 32        # 소규모 시계열에서도 안정적으로 학습되도록 약간 낮춤
 SEQ_LEN     = 12
 PRED_LEN    = 3
 PATCH_LEN   = 4          # ← CNN이 최소 3~5 커널 적용 가능하도록 확대
 STRIDE      = 1
 
-D_MODEL     = 128        # 4의 배수(멀티스케일 분기 4개 합산)
-N_HEADS     = 2
-ENC_LAYERS  = 4
-FF_DIM      = 128
-DROPOUT     = 0.3        # 약간 강화
-HEAD_HIDDEN = [64, 64]
+D_MODEL     = 64       # 8의 배수 (강화된 멀티스케일 분기 8개 합산) - 표현력 증가
+N_HEADS     = 4        # 더 많은 attention head로 다양한 패턴 포착
+ENC_LAYERS  = 3        # 인코더 깊이 증가
+FF_DIM      = 64       # 피드포워드 차원 증가
+DROPOUT     = 0.2        # 약간 강화
+HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
-LR              = 5e-4
-WEIGHT_DECAY    = 5e-4
-PATIENCE        = 60
-WARMUP_EPOCHS   = 30
+# tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
+# 디폴트값 : alpha 1.5, gain 1.2
+TANH_ALPHA = 20.0
+TANH_GAIN = 1.2
+TANH_LEARNABLE = True
 
-SCALER_TYPE     = "robust"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
+LR              = 3e-4    # 더 강한 모델이므로 학습률 감소
+WEIGHT_DECAY    = 5e-3
+PATIENCE        = 50      # 조기 종료 기준 단축 (더 강한 모델은 빠르게 수렴)
+WARMUP_EPOCHS   = 30      # Warmup 에포크 단축
+
+SCALER_TYPE     = "standard"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
 
 # 외생 특징 사용 모드: "auto"|"none"|"vax"|"resp"|"both"
 USE_EXOG        = "all"
 
-OUT_CSV          = str(BASE_DIR / "data/results/ili_predictions.csv")
+OUT_CSV          = str(BASE_DIR / "ili_predictions.csv")
 PLOT_LAST_WINDOW = str(BASE_DIR / "plot_last_window.png")
 PLOT_TEST_RECON  = str(BASE_DIR / "plot_test_reconstruction.png")
 PLOT_MA_CURVES   = str(BASE_DIR / "plot_ma_curves.png")
@@ -262,114 +346,84 @@ def _norm_season_text(s: str) -> str:
     return f"{m.group(1)}-{m.group(2)}" if m else ss.strip()
 
 # =========================
-# data loader (multivariate-ready)
+# data loader (multivariate-ready) - PostgreSQL용으로 수정
 # =========================
-def load_and_prepare(csv_path: Path, use_exog: str = "auto") -> Tuple[np.ndarray, np.ndarray, list, list]:
+def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndarray, list, list]:   
     """
+    PostgreSQL에서 로드한 데이터프레임을 모델 입력 형태로 변환
+    
+    Parameters:
+        df_input: PostgreSQL에서 로드한 DataFrame (전역 변수 df 사용 가능)
+    
     Returns:
-        X: (N, F) features (first column should be 'ili' to align with univariate fallback)
+        X: (N, F) features
         y: (N,) target (ili)
         labels: list[str] for plotting ticks
         used_feat_names: list[str] feature column names (len=F)
     """
-    df = read_csv_kor(csv_path).copy()
-    df = weekly_to_daily_interp(df, season_col="season_norm", week_col="week", target_col="ili")
-    # 정렬
-# 정렬: 주→일 변환 후에는 date 기준으로만 정렬
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.sort_values("date").reset_index(drop=True)
+    # 전역 변수 df 사용
+    if df_input is None:
+        if 'df' not in globals():
+            raise ValueError("df가 정의되지 않았습니다. PostgreSQL에서 데이터를 먼저 로드하세요.")
+        df = globals()['df'].copy()
     else:
-        # (극히 드문 fallback) date가 없을 때만 기존 로직
-        if {"season_norm", "week"}.issubset(df.columns):
-            df["season_norm"] = df["season_norm"].astype(str).map(_norm_season_text)
-            df["week"] = pd.to_numeric(df["week"], errors="coerce")
-            df = df.sort_values(["season_norm", "week"]).copy()
-        elif "label" in df.columns:
-            df = df.sort_values(["label"]).copy()
-
-    # 타깃
-    if "ili" not in df.columns:
-        raise ValueError("CSV에 'ili' 컬럼이 없습니다.")
-    df["ili"] = pd.to_numeric(df["ili"], errors="coerce")
-    if df["ili"].isna().any():
-        df["ili"] = df["ili"].interpolate(method="linear", limit_direction="both").fillna(df["ili"].median())
+        df = df_input.copy()
     
-    # --- ✅ Seasonality feature 추가 ---
-    if "week" in df.columns:
-        df["week_sin"] = np.sin(2 * np.pi * df["week"] / 52.0)
-        df["week_cos"] = np.cos(2 * np.pi * df["week"] / 52.0)
-    else:
-        df["week_sin"] = 0.0
-        df["week_cos"] = 0.0
-
-    # --- ✅ Alias 매핑 ---
-    if "case_count" in df.columns and "respiratory_index" not in df.columns:
-        df["respiratory_index"] = df["case_count"]
-
-    # 기후 피처 후보
-    climate_feats = []
-    if "wx_week_avg_temp" in df.columns:     climate_feats.append("wx_week_avg_temp")
-    if "wx_week_avg_rain" in df.columns:     climate_feats.append("wx_week_avg_rain")
-    if "wx_week_avg_humidity" in df.columns: climate_feats.append("wx_week_avg_humidity")
-
-    # 외생 후보 존재 여부
-    has_vax  = "vaccine_rate" in df.columns
-    has_resp = "respiratory_index" in df.columns
-
-    # 어떤 특징을 쓸지 결정
-    mode = use_exog.lower()
-    if mode == "auto":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
-        chosen += climate_feats
-    elif mode == "none":
-        chosen = ["ili"]
-    elif mode == "vax":
-        chosen = ["ili"] + (["vaccine_rate"] if has_vax else [])
-    elif mode == "resp":
-        chosen = ["ili"] + (["respiratory_index"] if has_resp else [])
-    elif mode == "both":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
-        chosen += climate_feats
-    elif mode == "climate":
-        chosen = ["ili"] + climate_feats
-    elif mode == "all":
-        chosen = ["ili"]
-        if has_vax:  chosen.append("vaccine_rate")
-        if has_resp: chosen.append("respiratory_index")
-        chosen += climate_feats
-    else:
-        raise ValueError(f"Unknown USE_EXOG mode: {use_exog}")
-
-    # 숫자화 & 보간
-    for c in chosen:
+    print(f"\n📊 데이터 준비 중...")
+    print(f"   입력 데이터: {df.shape}")
+    print(f"   컬럼: {list(df.columns)}")
+    
+    # ⭐ 상단에서 정의한 cols 변수 사용 (상관계수 분석에 사용한 컬럼 그대로)
+    if 'cols' not in globals():
+        raise ValueError("cols 변수가 정의되지 않았습니다. 상단 코드를 먼저 실행하세요.")
+    
+    feat_names = globals()['cols']
+    
+    print(f"   선택된 특징 컬럼 (상단 cols 변수 사용): {feat_names}")
+    
+    # 선택된 컬럼만 사용 (이미 상단에서 결측값 처리 완료)
+    # 추가 확인 및 보간 (혹시 모를 NaN 대비)
+    valid_feat_names = []
+    for c in feat_names:
+        if c not in df.columns:
+            print(f"   ⚠️  컬럼 '{c}'가 df에 없습니다. 건너뜀.")
+            continue
         df[c] = pd.to_numeric(df[c], errors="coerce")
+        
+        # 전체가 NaN인 컬럼 체크
+        if df[c].isna().all():
+            print(f"   ❌ {c}: 전체 NaN - 피처에서 제외")
+            continue
+        
         if df[c].isna().any():
-            df[c] = df[c].interpolate(method="linear", limit_direction="both").fillna(df[c].median())
-
-    # 라벨
-    if "label" in df.columns and df["label"].notna().any():
-        labels = df["label"].astype(str).tolist()
-    elif {"season_norm","week"}.issubset(df.columns):
-        labels = (df["season_norm"].astype(str) + " season - W" + df["week"].astype(int).astype(str)).tolist()
-    else:
-        labels = [f"idx_{i}" for i in range(len(df))]
-
+            nan_count = df[c].isna().sum()
+            print(f"   ⚠️  {c}: {nan_count}개 결측값 발견 - 보간 처리")
+            df[c] = df[c].interpolate(method="linear", limit_direction="both")
+            # 보간 후에도 남은 NaN은 0으로 채움 (median이 NaN일 수 있으므로)
+            if df[c].isna().any():
+                fill_val = df[c].median() if not np.isnan(df[c].median()) else 0.0
+                df[c] = df[c].fillna(fill_val)
+        
+        valid_feat_names.append(c)
+    
+    if len(valid_feat_names) == 0:
+        raise ValueError("사용 가능한 피처가 없습니다.")
+    
+    if len(valid_feat_names) < len(feat_names):
+        removed = set(feat_names) - set(valid_feat_names)
+        print(f"   ⚠️  제거된 피처: {removed}")
+    
+    feat_names = valid_feat_names
+    
+    # 라벨 생성 (인덱스 기반)
+    labels = [f"idx_{i}" for i in range(len(df))]
+    
     # X, y 구성
-    feat_names = chosen[:]
-    if INCLUDE_SEASONAL_FEATS and {"week_sin", "week_cos"}.issubset(df.columns):
-        feat_names += ["week_sin", "week_cos"]
-
-    # 선택된 입력 피처 로그 찍기
-    print("[Data] Exogenous detected -> vaccine_rate:", has_vax, "| respiratory_index:", has_resp, "| climate_feats:", climate_feats)
-    print("[Data] Selected feature columns (order) ->", feat_names)
-
     X = df[feat_names].to_numpy(dtype=float)
     y = df["ili"].to_numpy(dtype=float)
+    
+    print(f"   ✅ 데이터 준비 완료: X={X.shape}, y={y.shape}")
+    
     return X, y, labels, feat_names
 
 # =========================
@@ -405,21 +459,65 @@ class PatchTSTDataset(Dataset):
 # =========================
 # model (Multi-Scale CNN + TokenConvMixer + PatchTST + AttnPool)
 # =========================
+class ScaledTanh(nn.Module):
+    """tanh 출력에 스케일을 부여 (입력 스케일 alpha, 출력 스케일 gain)."""
+    def __init__(self, alpha: float = 1.0, gain: float = 1.0, learnable: bool = False):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.tensor(float(alpha)), requires_grad=learnable)
+        self.gain = nn.Parameter(torch.tensor(float(gain)), requires_grad=learnable)
+
+    def forward(self, x):
+        return torch.tanh(self.alpha * x) * self.gain
+
 class MultiScaleCNNPatchEmbed(nn.Module):
     """
-    (B, P, L, F) -> [각 패치] 멀티스케일 Conv1d 분기(k=2/3/5, 또 하나는 dilation=2) → GAP → (B, P, D)
-    - 분기 4개 출력 concat → D_MODEL
-    - 패치 내부의 급격/완만/잔진동 패턴을 동시에 포착
+    강화된 멀티스케일 CNN 패치 임베딩: 다양한 커널 크기와 dilated convolution으로
+    급격한 변화/이상치를 더 잘 포착
+    (B, P, L, F) -> [각 패치] 멀티스케일 분기 → 활성화 → GAP → (B, P, D)
+    - 분기 8개: k=[1,3,5,7] × dilation=[1,2]
+    - 패치 내부의 급격/완만/이상 패턴 동시 포착
     """
     def __init__(self, in_features: int, patch_len: int, d_model: int, dropout: float = 0.1):
         super().__init__()
-        assert d_model % 4 == 0, "d_model은 4의 배수가 되어야 멀티스케일 분기 합산이 맞습니다."
-        out_ch = d_model // 4
-    # 커널 크기를 patch_len에 비례하게 설정
-        self.b2 = nn.Conv1d(in_features, out_ch, kernel_size=1, padding=0)
-        self.b3 = nn.Conv1d(in_features, out_ch, kernel_size=3, padding=1)
-        self.b5 = nn.Conv1d(in_features, out_ch, kernel_size=5, padding=2)
-        self.bd = nn.Conv1d(in_features, out_ch, kernel_size=3, padding=2, dilation=2)
+        assert d_model % 8 == 0, "d_model은 8의 배수가 되어야 멀티스케일 분기 합산이 맞습니다."
+        out_ch = d_model // 8
+        
+        # 분기 1-4: 다양한 커널 크기 (점진적 확대)
+        # Tanh 활성화: 극값(튀는 값)에 더 민감하게 반응 [-1, 1] 범위로 제약
+        self.b1 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=1, padding=0, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.b3 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=3, padding=1, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.b5 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=5, padding=2, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.b7 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=7, padding=3, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        
+        # 분기 5-8: dilated convolution (넓은 수용장으로 이상치 포착)
+        self.bd3_d1 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=3, padding=1, dilation=1, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.bd3_d2 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=3, padding=2, dilation=2, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.bd5_d2 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=5, padding=4, dilation=2, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
+        self.bd3_d3 = nn.Sequential(
+            nn.Conv1d(in_features, out_ch, kernel_size=3, padding=3, dilation=3, bias=False),
+            ScaledTanh(alpha=TANH_ALPHA, gain=TANH_GAIN, learnable=TANH_LEARNABLE)
+        )
 
         self.bn   = nn.BatchNorm1d(d_model)
         self.act  = nn.GELU()
@@ -431,7 +529,18 @@ class MultiScaleCNNPatchEmbed(nn.Module):
         B, P, L, F = x.shape
         x = x.view(B*P, L, F).permute(0, 2, 1)        # (B*P, F, L)
 
-        z = torch.cat([self.b2(x), self.b3(x), self.b5(x), self.bd(x)], dim=1)  # (B*P, D, L)
+        # 8개 분기 병렬 처리
+        z = torch.cat([
+            self.b1(x),      # 미세한 변화 포착
+            self.b3(x),      # 작은 스케일 패턴
+            self.b5(x),      # 중간 스케일 패턴
+            self.b7(x),      # 큰 스케일 패턴
+            self.bd3_d1(x),  # 넓은 수용장 (이상치 민감)
+            self.bd3_d2(x),  # dilated 중간
+            self.bd5_d2(x),  # dilated 큰 스케일
+            self.bd3_d3(x),  # dilated 매우 넓은
+        ], dim=1)  # (B*P, D, L)
+        
         z = self.act(self.bn(z))
         z = self.pool(z).squeeze(-1)                  # (B*P, D)
         z = self.drop(z)
@@ -803,12 +912,18 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     print(f"Saved plot -> {PLOT_MA_CURVES}")
 
 # =========================
-# run
+# run (간단 실행 - Feature Importance 없음)
 # =========================
-if __name__ == "__main__":
-    print(f"Using CSV: {CSV_PATH.name} | Device: {DEVICE}")
-    print(f"USE_EXOG = '{USE_EXOG}'  (auto-detects vaccine/resp columns)")
-    X, y, labels, feat_names = load_and_prepare(CSV_PATH, USE_EXOG)
+# 참고: 이 블록은 간단한 실행용입니다.
+# Feature Importance를 포함한 전체 분석은 아래 두 번째 if __name__ == "__main__" 블록을 사용하세요.
+if False:  # 비활성화 (아래 블록 사용)
+    print(f"\n{'='*60}")
+    print("🚀 모델 학습 시작 (간단 버전)")
+    print(f"Device: {DEVICE}")
+    print(f"{'='*60}\n")
+    
+    # PostgreSQL에서 로드한 df 사용
+    X, y, labels, feat_names = load_and_prepare()
     print(f"Data points: {len(y)} | Features used ({len(feat_names)}): {feat_names}")
     train_and_eval(X, y, labels, feat_names)
 
@@ -1170,19 +1285,40 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     return model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df
 
 # =========================
-# 실행부 (결과 출력)
+# 실행부 (결과 출력 + Feature Importance)
 # =========================
 if __name__ == "__main__":
+    print(f"\n{'='*60}")
+    print("🚀 모델 학습 시작 (Feature Importance 포함)")
+    print(f"Device: {DEVICE}")
+    print(f"Data Source: PostgreSQL influenza_data (19-49세)")
+    print(f"{'='*60}\n")
+    
+    # PostgreSQL에서 로드한 df 사용
+    X, y, labels, feat_names = load_and_prepare()
+    print(f"\n📊 데이터 정보:")
+    print(f"   Data points: {len(y)}")
+    print(f"   Features: {feat_names}")
+    print(f"   Feature count: {len(feat_names)}")
+    
     model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
         X, y, labels, feat_names,
         compute_fi=True,
         save_fi=True
     )
 
-    print("\n=== [결과 요약] ===")
-    print(f"Feature 개수: {len(feat_names)}")
+    print("\n" + "="*60)
+    print("=== [최종 결과 요약] ===")
+    print("="*60)
+    print(f"✅ Feature 개수: {len(feat_names)}")
     if fi_df is not None:
-        print("\n[Top 10 Feature Importance]")
+        print("\n📊 [Top 10 Feature Importance]")
         print(fi_df.head(10).to_string(index=False))
+        print(f"\n💾 저장된 파일:")
+        print(f"   - feature_importance.csv")
+        print(f"   - feature_importance.png")
     else:
-        print("Feature Importance 계산이 수행되지 않았습니다.")
+        print("⚠️  Feature Importance 계산이 수행되지 않았습니다.")
+    
+    print("\n✅ 모든 작업 완료!")
+    print("="*60)
