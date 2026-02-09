@@ -1,0 +1,108 @@
+_wandb:
+    value:
+        cli_version: 0.24.1
+        e:
+            rtkceqph1mlva9jrcb3ddctxe90g1gvp:
+                apple:
+                    ecpuCores: 6
+                    gpuCores: 8
+                    memoryGb: 16
+                    name: Apple M4
+                    pcpuCores: 4
+                    ramTotalBytes: "17179869184"
+                    swapTotalBytes: "2147483648"
+                codePath: test_patchTST.py
+                codePathLocal: test_patchTST.py
+                cpu_count: 10
+                cpu_count_logical: 10
+                disk:
+                    /:
+                        total: "245107195904"
+                        used: "208446857216"
+                email: suuuuwimmer@gmail.com
+                executable: /Users/suyeong/miniconda3/envs/pydev310/bin/python
+                git:
+                    commit: b0c10e6ba7e74b3c766dc4f34d240d75cd13029e
+                    remote: https://github.com/swimmerRAt/influenza-prediction-model.git
+                host: Mac.local
+                memory:
+                    total: "17179869184"
+                os: macOS-26.2-arm64-arm-64bit
+                program: /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/test_patchTST.py
+                python: CPython 3.10.14
+                root: /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model
+                startedAt: "2026-02-09T08:42:25.402460Z"
+                writerId: rtkceqph1mlva9jrcb3ddctxe90g1gvp
+        m: []
+        python_version: 3.10.14
+        t:
+            "1":
+                - 1
+                - 5
+                - 53
+                - 105
+            "2":
+                - 1
+                - 5
+                - 53
+                - 105
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.10.14
+            "5": 0.24.1
+            "8":
+                - 2
+            "12": 0.24.1
+            "13": darwin-arm64
+amp_weight:
+    value: 0.1
+batch_size:
+    value: 32
+d_model:
+    value: 64
+dropout:
+    value: 0.2
+enc_layers:
+    value: 3
+epochs:
+    value: 200
+ff_dim:
+    value: 64
+head_hidden:
+    value:
+        - 64
+        - 32
+loss:
+    value: amplitude_aware_mse
+loss_type:
+    value: amp+slope
+lr:
+    value: 0.0003
+n_heads:
+    value: 4
+patch_len:
+    value: 4
+pred_len:
+    value: 3
+recon_w_end:
+    value: 0.5
+recon_w_start:
+    value: 2
+scaler_type:
+    value: standard
+seq_len:
+    value: 12
+slope_weight:
+    value: 1.2
+stride:
+    value: 1
+tanh_alpha:
+    value: 1.5
+tanh_gain:
+    value: 6
+tanh_learnable:
+    value: true
+weight_decay:
+    value: 0.005

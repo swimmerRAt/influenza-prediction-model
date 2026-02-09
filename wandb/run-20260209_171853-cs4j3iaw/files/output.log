@@ -1,0 +1,113 @@
+[Shapes] X_tr:(315, 1), X_va:(67, 1), X_te:(68, 1) | F=1
+[Info] Model input feature order -> ['ili']
+[Batch] Xb.shape=(32, 9, 4, 1) (B,P,L,F), yb.shape=(32, 3)
+[Batch] Feature order used -> ['ili']
+[Epoch 001/200] LR=0.000010 | Loss T/V=1.52861/2.35237 | MAE  T/V=13.54943/16.25588Corr V=0.009
+[Epoch 002/200] LR=0.000020 | Loss T/V=1.52556/2.33626 | MAE  T/V=13.53473/16.18939Corr V=0.018
+[Epoch 003/200] LR=0.000030 | Loss T/V=1.51223/2.31524 | MAE  T/V=13.53991/16.12841Corr V=0.026
+[Epoch 004/200] LR=0.000040 | Loss T/V=1.51127/2.29091 | MAE  T/V=13.55215/16.10122Corr V=0.038
+[Epoch 005/200] LR=0.000050 | Loss T/V=1.49834/2.27199 | MAE  T/V=13.58902/16.11486Corr V=0.042
+[Epoch 006/200] LR=0.000060 | Loss T/V=1.48755/2.24353 | MAE  T/V=13.56179/16.08807Corr V=0.071
+[Epoch 007/200] LR=0.000070 | Loss T/V=1.48597/2.21732 | MAE  T/V=13.64894/16.11998Corr V=0.087
+[Epoch 008/200] LR=0.000080 | Loss T/V=1.47457/2.18835 | MAE  T/V=13.59580/16.10625Corr V=0.132
+[Epoch 009/200] LR=0.000090 | Loss T/V=1.44726/2.15358 | MAE  T/V=13.58215/16.02831Corr V=0.195
+[Epoch 010/200] LR=0.000100 | Loss T/V=1.43249/2.11516 | MAE  T/V=13.48672/15.78191Corr V=0.257
+[Epoch 011/200] LR=0.000110 | Loss T/V=1.41068/2.06741 | MAE  T/V=13.34947/15.56155Corr V=0.333
+[Epoch 012/200] LR=0.000120 | Loss T/V=1.37643/2.00182 | MAE  T/V=13.07172/15.11960Corr V=0.398
+[Epoch 013/200] LR=0.000130 | Loss T/V=1.29431/1.93307 | MAE  T/V=12.54881/14.66341Corr V=0.475
+[Epoch 014/200] LR=0.000140 | Loss T/V=1.23734/1.86245 | MAE  T/V=11.85347/14.06123Corr V=0.538
+[Epoch 015/200] LR=0.000150 | Loss T/V=1.09510/1.83913 | MAE  T/V=11.11553/14.34540Corr V=0.578
+[Epoch 016/200] LR=0.000160 | Loss T/V=1.02493/1.85113 | MAE  T/V=10.45406/14.56006Corr V=0.556
+[Epoch 017/200] LR=0.000170 | Loss T/V=0.95638/1.86969 | MAE  T/V=10.32175/15.49977Corr V=0.603
+[Epoch 018/200] LR=0.000180 | Loss T/V=0.85592/1.73473 | MAE  T/V=9.15476/14.39948Corr V=0.596
+[Epoch 019/200] LR=0.000190 | Loss T/V=0.71694/1.71848 | MAE  T/V=8.57614/14.66209Corr V=0.633
+[Epoch 020/200] LR=0.000200 | Loss T/V=0.67024/1.62265 | MAE  T/V=8.44062/13.91108Corr V=0.604
+[Epoch 021/200] LR=0.000209 | Loss T/V=0.62309/1.51773 | MAE  T/V=8.04861/13.33483Corr V=0.597
+[Epoch 022/200] LR=0.000219 | Loss T/V=0.57707/1.96539 | MAE  T/V=8.14715/15.25015Corr V=0.557
+[Epoch 023/200] LR=0.000229 | Loss T/V=0.50272/1.86175 | MAE  T/V=7.47140/14.29701Corr V=0.492
+[Epoch 024/200] LR=0.000239 | Loss T/V=0.62394/1.40392 | MAE  T/V=7.60988/12.59164Corr V=0.567
+[Epoch 025/200] LR=0.000249 | Loss T/V=0.42135/1.87675 | MAE  T/V=6.90390/14.26136Corr V=0.496
+[Epoch 026/200] LR=0.000259 | Loss T/V=0.48375/1.77129 | MAE  T/V=7.31119/13.83746Corr V=0.510
+[Epoch 027/200] LR=0.000269 | Loss T/V=0.41952/1.74295 | MAE  T/V=6.67719/13.85300Corr V=0.541
+[Epoch 028/200] LR=0.000279 | Loss T/V=0.38660/1.47149 | MAE  T/V=6.70744/12.49563Corr V=0.549
+[Epoch 029/200] LR=0.000289 | Loss T/V=0.43912/2.02591 | MAE  T/V=6.67331/15.01534Corr V=0.540
+[Epoch 030/200] LR=0.000299 | Loss T/V=0.39925/1.47913 | MAE  T/V=6.88984/12.05768Corr V=0.472
+[Epoch 031/200] LR=0.000299 | Loss T/V=0.48155/0.98231 | MAE  T/V=6.92043/9.98383Corr V=0.555
+[Epoch 032/200] LR=0.000299 | Loss T/V=0.38345/1.59383 | MAE  T/V=6.33099/12.87099Corr V=0.557
+[Epoch 033/200] LR=0.000299 | Loss T/V=0.36721/1.54923 | MAE  T/V=6.44881/12.38231Corr V=0.524
+[Epoch 034/200] LR=0.000299 | Loss T/V=0.34304/1.30063 | MAE  T/V=5.92116/11.65899Corr V=0.588
+[Epoch 035/200] LR=0.000299 | Loss T/V=0.30974/1.56308 | MAE  T/V=6.16600/12.42174Corr V=0.540
+[Epoch 036/200] LR=0.000299 | Loss T/V=0.39166/1.53043 | MAE  T/V=6.27686/12.46717Corr V=0.542
+[Epoch 037/200] LR=0.000299 | Loss T/V=0.33011/1.44066 | MAE  T/V=5.89747/11.84438Corr V=0.551
+[Epoch 038/200] LR=0.000299 | Loss T/V=0.30955/1.37220 | MAE  T/V=6.03946/11.85845Corr V=0.574
+[Epoch 039/200] LR=0.000299 | Loss T/V=0.32844/1.26795 | MAE  T/V=6.06697/11.34285Corr V=0.570
+[Epoch 040/200] LR=0.000299 | Loss T/V=0.33948/1.40501 | MAE  T/V=6.08298/11.50804Corr V=0.551
+[Epoch 041/200] LR=0.000299 | Loss T/V=0.31047/1.34146 | MAE  T/V=5.93679/11.79477Corr V=0.584
+[Epoch 042/200] LR=0.000298 | Loss T/V=0.34896/1.56134 | MAE  T/V=6.18423/12.07778Corr V=0.520
+[Epoch 043/200] LR=0.000298 | Loss T/V=0.30774/1.56426 | MAE  T/V=5.86718/12.86148Corr V=0.561
+[Epoch 044/200] LR=0.000298 | Loss T/V=0.31708/1.70793 | MAE  T/V=5.94328/12.62364Corr V=0.515
+[Epoch 045/200] LR=0.000298 | Loss T/V=0.36806/1.44990 | MAE  T/V=5.97275/11.62799Corr V=0.562
+[Epoch 046/200] LR=0.000298 | Loss T/V=0.26832/1.42940 | MAE  T/V=5.61929/12.00650Corr V=0.563
+[Epoch 047/200] LR=0.000298 | Loss T/V=0.29947/1.35771 | MAE  T/V=5.86281/11.39054Corr V=0.562
+[Epoch 048/200] LR=0.000298 | Loss T/V=0.28205/1.44150 | MAE  T/V=5.43059/12.12795Corr V=0.556
+[Epoch 049/200] LR=0.000298 | Loss T/V=0.23044/1.52328 | MAE  T/V=5.30038/12.00725Corr V=0.557
+[Epoch 050/200] LR=0.000298 | Loss T/V=0.34444/1.34290 | MAE  T/V=5.81940/11.41296Corr V=0.623
+[Epoch 051/200] LR=0.000298 | Loss T/V=0.26314/1.22976 | MAE  T/V=5.76126/10.90614Corr V=0.632
+[Epoch 052/200] LR=0.000298 | Loss T/V=0.26541/1.67805 | MAE  T/V=5.57777/12.70253Corr V=0.598
+[Epoch 053/200] LR=0.000298 | Loss T/V=0.25898/1.50699 | MAE  T/V=5.26796/12.51231Corr V=0.562
+[Epoch 054/200] LR=0.000298 | Loss T/V=0.27197/1.44734 | MAE  T/V=5.53148/11.79308Corr V=0.572
+[Epoch 055/200] LR=0.000298 | Loss T/V=0.24436/1.67471 | MAE  T/V=5.37975/12.63173Corr V=0.571
+[Epoch 056/200] LR=0.000298 | Loss T/V=0.24408/1.43538 | MAE  T/V=5.42258/11.78270Corr V=0.585
+[Epoch 057/200] LR=0.000298 | Loss T/V=0.23618/1.44927 | MAE  T/V=5.24518/12.13773Corr V=0.586
+[Epoch 058/200] LR=0.000298 | Loss T/V=0.22791/1.58146 | MAE  T/V=5.09705/12.40909Corr V=0.575
+[Epoch 059/200] LR=0.000298 | Loss T/V=0.24686/1.49871 | MAE  T/V=5.16327/12.34383Corr V=0.581
+[Epoch 060/200] LR=0.000298 | Loss T/V=0.28816/1.39603 | MAE  T/V=5.62406/11.92020Corr V=0.581
+[Epoch 061/200] LR=0.000298 | Loss T/V=0.27080/1.47934 | MAE  T/V=5.55515/11.79287Corr V=0.582
+[Epoch 062/200] LR=0.000298 | Loss T/V=0.24182/1.32098 | MAE  T/V=5.09587/11.61569Corr V=0.582
+[Epoch 063/200] LR=0.000298 | Loss T/V=0.21136/1.77190 | MAE  T/V=4.95241/13.22080Corr V=0.555
+[Epoch 064/200] LR=0.000298 | Loss T/V=0.24991/1.58493 | MAE  T/V=5.35677/12.69574Corr V=0.576
+[Epoch 065/200] LR=0.000297 | Loss T/V=0.25300/1.19810 | MAE  T/V=5.33292/11.21908Corr V=0.625
+[Epoch 066/200] LR=0.000297 | Loss T/V=0.25329/1.60582 | MAE  T/V=5.04789/12.96501Corr V=0.589
+[Epoch 067/200] LR=0.000297 | Loss T/V=0.20976/1.46874 | MAE  T/V=5.00747/12.17297Corr V=0.573
+[Epoch 068/200] LR=0.000297 | Loss T/V=0.20596/1.48577 | MAE  T/V=4.96023/12.18809Corr V=0.583
+[Epoch 069/200] LR=0.000297 | Loss T/V=0.20495/1.60597 | MAE  T/V=5.03059/12.90716Corr V=0.595
+[Epoch 070/200] LR=0.000297 | Loss T/V=0.22718/1.39758 | MAE  T/V=5.03310/11.71083Corr V=0.609
+[Epoch 071/200] LR=0.000297 | Loss T/V=0.24804/1.53188 | MAE  T/V=5.07566/12.07109Corr V=0.595
+[Epoch 072/200] LR=0.000297 | Loss T/V=0.21642/1.65942 | MAE  T/V=4.64212/12.97745Corr V=0.611
+[Epoch 073/200] LR=0.000297 | Loss T/V=0.20182/1.51793 | MAE  T/V=4.80469/12.42817Corr V=0.603
+[Epoch 074/200] LR=0.000297 | Loss T/V=0.23022/1.61235 | MAE  T/V=5.10392/12.71922Corr V=0.622
+[Epoch 075/200] LR=0.000297 | Loss T/V=0.19290/1.35910 | MAE  T/V=4.85877/11.66977Corr V=0.653
+[Epoch 076/200] LR=0.000297 | Loss T/V=0.19330/1.50681 | MAE  T/V=4.98603/12.16006Corr V=0.619
+[Epoch 077/200] LR=0.000297 | Loss T/V=0.23047/1.47178 | MAE  T/V=5.10905/11.90057Corr V=0.581
+[Epoch 078/200] LR=0.000297 | Loss T/V=0.24664/1.46513 | MAE  T/V=4.97198/12.10777Corr V=0.588
+[Epoch 079/200] LR=0.000297 | Loss T/V=0.21172/1.44549 | MAE  T/V=4.98570/12.34788Corr V=0.585
+[Epoch 080/200] LR=0.000297 | Loss T/V=0.23584/1.72848 | MAE  T/V=4.94053/13.56495Corr V=0.568
+[Epoch 081/200] LR=0.000297 | Loss T/V=0.18030/1.40229 | MAE  T/V=4.54295/11.66235Corr V=0.615
+Early stopping after 81 epochs (no improvement 50).
+
+=== Final Test Metrics ===
+MSE : 75.645203
+RMSE: 8.697425
+MAE : 5.454829
+Saved predictions -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/ili_predictions.csv
+Saved plot -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/plot_last_window.png
+Saved plot -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/plot_test_reconstruction.png
+Saved plot -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/plot_ma_curves.png
+[FI] Baseline Val MAE: 9.983834
+[FI] Baseline Test MAE: 5.454829
+[FI]                  ili | ΔMAE(val) perm=+6.608051  mean=+7.947867
+[FI] Saved -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/feature_importance.csv
+[FI] Saved -> /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/feature_importance.png
+
+============================================================
+=== [최종 결과 요약] ===
+============================================================
+✅ Feature 개수: 1
+
+📊 [Top 10 Feature Importance]
+feature  delta_mae_val_perm  delta_mae_val_mean  delta_mae_test_perm  delta_mae_test_mean
+    ili            6.608051            7.947867             7.012934             7.969375
+
+💾 저장된 파일:
+   - feature_importance.csv
+   - feature_importance.png
