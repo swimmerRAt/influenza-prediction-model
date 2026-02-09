@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
+import wandb
+from functools import partial
 
 # PostgreSQL 데이터 로딩
 from database.db_utils import TimeSeriesDB, load_from_postgres
@@ -264,10 +265,14 @@ FF_DIM      = 64       # 피드포워드 차원 증가
 DROPOUT     = 0.2        # 약간 강화
 HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
+# Amplitude-aware loss 가중치 (수영)
+AMP_WEIGHT   = 0.05
+SLOPE_WEIGHT = 0.8
+
 # tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
 # 디폴트값 : alpha 1.5, gain 1.2
 TANH_ALPHA = 20.0
-TANH_GAIN = 1.2
+TANH_GAIN = 3.0
 TANH_LEARNABLE = True
 
 LR              = 3e-4    # 더 강한 모델이므로 학습률 감소
@@ -723,6 +728,7 @@ class PatchTSTModel(nn.Module):
             in_dim = h
         mlp.append(nn.Linear(in_dim, pred_len))
         self.head = nn.Sequential(*mlp)
+        self.out_scale = nn.Parameter(torch.tensor(1.0)) # 출력 스케일 파라미터 (수영)
 
     def forward(self, x):
         # x: (B, P, L, F)
@@ -731,16 +737,8 @@ class PatchTSTModel(nn.Module):
         z = self.posenc(z)
         z = self.encoder(z)
         z = self.pool(z)       # (B,D)
-        return self.head(z)    # (B,H)
-
-    def correlation_loss(pred, true):
-    # pred, true: (B, H)
-        pred = pred - pred.mean(dim=1, keepdim=True)
-        true = true - true.mean(dim=1, keepdim=True)
-        corr = (pred * true).sum(dim=1) / (
-            (pred.norm(dim=1) * true.norm(dim=1)) + 1e-6
-        )
-        return 1 - corr.mean()
+        # return self.head(z)    # (B,H)
+        return self.head(z) * self.out_scale    # (B,H) (수영)
 # =========================
 # helpers
 # =========================
@@ -771,260 +769,40 @@ def batch_corrcoef(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
     return float(np.corrcoef(p_orig, t_orig)[0,1])
 
 # =========================
-# train & evaluate
+# amplitude-aware MSE 함수 만들기 (수영)
 # =========================
-def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list):
-    """
-    X: (N,F), y: (N,), feat_names: ['ili', 'vaccine_rate', 'respiratory_index'] 등
-    """
-    set_seed(SEED)
-    (s0,e0),(s1,e1),(s2,e2) = make_splits(len(y))
-    X_tr, X_va, X_te = X[s0:e0], X[s1:e1], X[s2:e2]
-    y_tr, y_va, y_te = y[s0:e0], y[s1:e1], y[s2:e2]
-    lab_tr, lab_va, lab_te = labels[s0:e0], labels[s1:e1], labels[s2:e2]
+# 값과 변환율이 클 수록 예측을 틀리면 손실을 더 크게 주도록 하는 MSE 함수임
+# def amplitude_aware_mse(pred, true,
+#                         amp_weight=0.02,
+#                         slope_weight=0.3): 
+#     amp_w = 1.0 + amp_weight * true.abs()
 
-    # ==== Scaling ====
-    # Target scaler
-    scaler_y = get_scaler()
-    y_tr_sc = scaler_y.fit_transform(y_tr.reshape(-1,1)).ravel()
-    y_va_sc = scaler_y.transform(y_va.reshape(-1,1)).ravel()
-    y_te_sc = scaler_y.transform(y_te.reshape(-1,1)).ravel()
+#     if true.shape[1] > 1:
+#         slope = torch.relu(true[:, 1:] - true[:, :-1])
+#         slope = torch.cat([slope[:, :1], slope], dim=1)
+#         slope_w = 1.0 + slope_weight * slope
+#     else:
+#         slope_w = 1.0
 
-    # Feature scaler (입력 특징 전체)
-    scaler_x = get_scaler()
-    X_tr_sc = scaler_x.fit_transform(X_tr)
-    X_va_sc = scaler_x.transform(X_va)
-    X_te_sc = scaler_x.transform(X_te)
+#     weight = amp_w * slope_w
+#     return (weight * (pred - true) ** 2).mean()
 
-    F = X.shape[1]
-    print(f"[Shapes] X_tr:{X_tr.shape}, X_va:{X_va.shape}, X_te:{X_te.shape} | F={F}")
-    print(f"[Info] Model input feature order -> {feat_names}")
+def amplitude_aware_mse(pred, true,
+                    amp_weight,
+                    slope_weight):
+    amp_w = 1.0 + amp_weight * true.abs()
 
-    ds_tr = PatchTSTDataset(X_tr_sc, y_tr_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-    ds_va = PatchTSTDataset(X_va_sc, y_va_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-    ds_te = PatchTSTDataset(X_te_sc, y_te_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
+    if true.shape[1] > 1:
+        slope = torch.relu(true[:, 1:] - true[:, :-1])
+        slope = torch.cat([slope[:, :1], slope], dim=1)
+        slope_w = 1.0 + slope_weight * slope
+    else:
+        slope_w = 1.0
 
-    # drop_last=False 로 변경(작은 데이터셋에서도 학습 배치 보장)
-    dl_tr = DataLoader(ds_tr, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-    dl_va = DataLoader(ds_va, batch_size=BATCH_SIZE, shuffle=False)
-    dl_te = DataLoader(ds_te, batch_size=BATCH_SIZE, shuffle=False)
-
-    model = PatchTSTModel(
-        in_features=F, patch_len=PATCH_LEN, d_model=D_MODEL, n_heads=N_HEADS,
-        n_layers=ENC_LAYERS, ff_dim=FF_DIM, dropout=DROPOUT,
-        pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN
-    ).to(DEVICE)
-
-    # Loss / Optim / Scheduler
-    crit = nn.HuberLoss(delta=1.0)
-    opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
-
-    # ---- history for curves ----
-    hist = {"train_loss":[], "val_loss":[], "train_mae":[], "val_mae":[]}
-
-    best_val = float("inf"); best_state=None; noimp=0
-    printed_batch_info = False
-    for ep in range(1, EPOCHS+1):
-        # ---- Train ----
-        model.train(); tr_loss_sum=0; tr_mae_sum=0; n=0
-        # warmup
-        for g in opt.param_groups:
-            g['lr'] = warmup_lr(ep, LR, WARMUP_EPOCHS)
-
-        for Xb,yb,_ in dl_tr:
-            if not printed_batch_info:
-                # Xb: (B, P, L, F)  ← 최종 모델 입력 텐서 구조
-                print(f"[Batch] Xb.shape={tuple(Xb.shape)} (B,P,L,F), yb.shape={tuple(yb.shape)}")
-                print(f"[Batch] Feature order used -> {feat_names}")
-                printed_batch_info = True
-            Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
-            opt.zero_grad()
-            pred = model(Xb)
-            loss = crit(pred, yb)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            bs=yb.size(0)
-            tr_loss_sum += loss.item()*bs; n+=bs
-            tr_mae_sum  += batch_mae_in_original_units(pred, yb, scaler_y)*bs
-
-        tr_loss = tr_loss_sum / max(1,n)
-        tr_mae  = tr_mae_sum  / max(1,n)
-
-        # ---- Validation ----
-        model.eval(); va_loss_sum=0; va_mae_sum=0; va_corr_sum = 0; n=0
-        with torch.no_grad():
-            for Xb,yb,_ in dl_va:
-                Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
-                pred = model(Xb); loss = crit(pred,yb)
-                bs=yb.size(0)
-                va_loss_sum += loss.item()*bs; n+=bs
-                va_mae_sum  += batch_mae_in_original_units(pred, yb, scaler_y)*bs
-                va_corr_sum += batch_corrcoef(pred, yb, scaler_y)*bs
-        va_loss = va_loss_sum / max(1,n)
-        va_mae  = va_mae_sum  / max(1,n)
-        va_corr = va_corr_sum / max(1,n)
-
-        scheduler.step()
-
-        hist["train_loss"].append(tr_loss)
-        hist["val_loss"].append(va_loss)
-        hist["train_mae"].append(tr_mae)
-        hist["val_mae"].append(va_mae)
-
-        print(f"[Epoch {ep:03d}/{EPOCHS}] "
-              f"LR={opt.param_groups[0]['lr']:.6f} | "
-              f"Loss T/V={tr_loss:.5f}/{va_loss:.5f} | "
-              f"MAE  T/V={tr_mae:.5f}/{va_mae:.5f}"
-              f"Corr V={va_corr:.3f}")
-
-        if va_loss < best_val - 1e-6:
-            best_val = va_loss; noimp=0
-            best_state = {k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-        else:
-            noimp += 1
-            if noimp >= PATIENCE:
-                print(f"Early stopping after {ep} epochs (no improvement {PATIENCE}).")
-                break
-
-    if best_state is not None:
-        model.load_state_dict({k:v.to(DEVICE) for k,v in best_state.items()})
-
-    # ---- Test & Metrics ----
-    model.eval(); preds=[]; trues=[]; starts=[]
-    with torch.no_grad():
-        for Xb,yb,i0 in dl_te:
-            Xb=Xb.to(DEVICE)
-            preds.append(model(Xb).detach().cpu().numpy())
-            trues.append(yb.numpy())
-            starts.append(i0.numpy())
-    yhat_sc = np.concatenate(preds,axis=0)
-    ytrue_sc= np.concatenate(trues,axis=0)
-    starts  = np.concatenate(starts,axis=0)
-
-    # inverse scale (target only)
-    yhat  = scaler_y.inverse_transform(yhat_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
-    ytrue = scaler_y.inverse_transform(ytrue_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
-
-    mse  = float(np.mean((yhat-ytrue)**2))
-    rmse = float(np.sqrt(mse))
-    mae  = float(np.mean(np.abs(yhat-ytrue)))
-    print("\n=== Final Test Metrics ===")
-    print(f"MSE : {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE : {mae:.6f}")
-
-    # =========================
-    # Save per-window predictions
-    # =========================
-    cols_true = [f"true_t+{i}" for i in range(1,PRED_LEN+1)]
-    cols_pred = [f"pred_t+{i}" for i in range(1,PRED_LEN+1)]
-    out = pd.DataFrame(np.hstack([ytrue, yhat]), columns=cols_true+cols_pred)
-    out.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-    print(f"Saved predictions -> {OUT_CSV}")
-
-    # =========================
-    # Plot_1: last window (H-step ahead)
-    # =========================
-    last_true = ytrue[-1]; last_pred = yhat[-1]
-    weeks = np.arange(1, PRED_LEN+1)
-    plt.figure(figsize=(10,4))
-    plt.plot(weeks, last_true, label="Truth (last window)", linewidth=2)
-    plt.plot(weeks, last_pred, label="Prediction (last window)", linewidth=2)
-    plt.title("Last Test Window: Truth vs Prediction")
-    plt.xlabel("Horizon (weeks ahead)")
-    plt.ylabel("ILI per 1,000 Population")
-    plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_LAST_WINDOW, dpi=150)
-    print(f"Saved plot -> {PLOT_LAST_WINDOW}")
-
-    # =========================
-    # Plot_2: test reconstruction (val-context included)
-    # =========================
-    context = y_va_sc[-SEQ_LEN:]                       # 표준화 컨텍스트
-    y_ct_sc = np.concatenate([context, y_te_sc])       # [SEQ_LEN + test_len]
-    # 입력 특징도 컨텍스트 포함해 재구성 필요 → X도 동일하게 붙여서 예측
-    X_ct_sc = np.concatenate([X_va_sc[-SEQ_LEN:], X_te_sc], axis=0)
-    ds_ct = PatchTSTDataset(X_ct_sc, y_ct_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-    dl_ct = DataLoader(ds_ct, batch_size=BATCH_SIZE, shuffle=False)
-
-    model.eval(); preds_ct=[]; starts_ct=[]
-    with torch.no_grad():
-        for Xb, _, i0 in dl_ct:
-            Xb = Xb.to(DEVICE)
-            preds_ct.append(model(Xb).detach().cpu().numpy())  # (B, H)
-            starts_ct.append(i0.numpy())
-    yhat_ct_sc = np.concatenate(preds_ct, axis=0)
-    starts_ct  = np.concatenate(starts_ct, axis=0)
-    yhat_ct = scaler_y.inverse_transform(yhat_ct_sc.reshape(-1,1)).reshape(-1, PRED_LEN)
-
-    test_len = len(y_te)
-    recon_sum   = np.zeros(test_len)
-    recon_count = np.zeros(test_len)
-    h_weights = np.linspace(RECON_W_START, RECON_W_END, PRED_LEN)
-
-    for k, s in enumerate(starts_ct):
-        pos0_ct = int(s) + SEQ_LEN   # [context+test] 축
-        pos0_te = pos0_ct - SEQ_LEN  # test 축으로 변환
-        for j in range(PRED_LEN):
-            idx = pos0_te + j
-            if 0 <= idx < test_len:
-                w = h_weights[j]
-                recon_sum[idx]   += yhat_ct[k, j] * w
-                recon_count[idx] += w
-
-    recon = np.where(recon_count > 0, recon_sum / np.maximum(1, recon_count), np.nan)
-
-    truth_test = y_te
-    x_labels = lab_te
-    tick_step = max(1, test_len // 12)
-    tick_idx  = list(range(0, test_len, tick_step))
-    if tick_idx[-1] != test_len-1:
-        tick_idx.append(test_len-1)
-    tick_text = [x_labels[i] for i in tick_idx]
-
-    plt.figure(figsize=(12,5))
-    plt.plot(range(test_len), truth_test, linewidth=2, label="Truth (test segment)")
-    plt.plot(range(test_len), recon,      linewidth=2, label="Prediction (overlap-avg, weighted)")
-    plt.title("Test Range: Truth vs Overlap-averaged Prediction (with context)")
-    plt.xlabel("Season - Week"); plt.ylabel("ILI per 1,000 Population")
-    plt.xticks(tick_idx, tick_text, rotation=45, ha="right")
-    plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_TEST_RECON, dpi=150)
-    print(f"Saved plot -> {PLOT_TEST_RECON}")
-
-    # =========================
-    # Plot_3: Train/Val MAE curves
-    # =========================
-    xs = np.arange(1, len(hist["train_mae"])+1)
-    plt.figure(figsize=(10,4))
-    plt.plot(xs, hist["train_mae"], linewidth=2, label="Train MAE (original units)")
-    plt.plot(xs, hist["val_mae"],   linewidth=2, label="Val MAE (original units)")
-    plt.title("Training Curves: MAE per epoch (lower is better)")
-    plt.xlabel("Epoch")
-    plt.ylabel("MAE (ILI per 1,000)")
-    plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_MA_CURVES, dpi=150)
-    print(f"Saved plot -> {PLOT_MA_CURVES}")
+    weight = amp_w * slope_w
+    return (weight * (pred - true) ** 2).mean()
 
 # =========================
-# run (간단 실행 - Feature Importance 없음)
-# =========================
-# 참고: 이 블록은 간단한 실행용입니다.
-# Feature Importance를 포함한 전체 분석은 아래 두 번째 if __name__ == "__main__" 블록을 사용하세요.
-if False:  # 비활성화 (아래 블록 사용)
-    print(f"\n{'='*60}")
-    print("🚀 모델 학습 시작 (간단 버전)")
-    print(f"Device: {DEVICE}")
-    print(f"{'='*60}\n")
-    
-    # PostgreSQL에서 로드한 df 사용
-    X, y, labels, feat_names = load_and_prepare()
-    print(f"Data points: {len(y)} | Features used ({len(feat_names)}): {feat_names}")
-    train_and_eval(X, y, labels, feat_names)
-
-    # =========================
 # Feature Importance utils
 # =========================
 def _eval_mae_on_split(model, X_split_sc, y_split_sc, scaler_y, feat_names, 
@@ -1173,7 +951,13 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN
     ).to(DEVICE)
 
-    crit = nn.HuberLoss(delta=1.0)
+    # crit = nn.HuberLoss(delta=1.0)
+    # crit = amplitude_aware_mse # (수영)
+    crit = partial(
+        amplitude_aware_mse,
+        amp_weight=AMP_WEIGHT,
+        slope_weight=SLOPE_WEIGHT
+    )
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
 
@@ -1231,6 +1015,17 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
               f"MAE  T/V={tr_mae:.5f}/{va_mae:.5f}"
               f"Corr V={va_corr:.3f}")
 
+        wandb.log({
+            "epoch": ep,
+            "lr": opt.param_groups[0]["lr"],
+            "loss/train": tr_loss,
+            "loss/val": va_loss,
+            "mae/train": tr_mae,
+            "mae/val": va_mae,
+            "corr/val": va_corr,
+            "model/out_scale": model.out_scale.item(),
+        })
+
         if va_loss < best_val - 1e-6:
             best_val = va_loss; noimp=0
             best_state = {k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
@@ -1261,6 +1056,14 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     mse  = float(np.mean((yhat-ytrue)**2))
     rmse = float(np.sqrt(mse))
     mae  = float(np.mean(np.abs(yhat-ytrue)))
+
+    wandb.log({
+        "test/mae": mae,
+        "test/rmse": rmse,
+        "test/pred_max": float(yhat.max()),
+        "test/true_max": float(ytrue.max()),
+    })
+
     print("\n=== Final Test Metrics ===")
     print(f"MSE : {mse:.6f}")
     print(f"RMSE: {rmse:.6f}")
@@ -1397,6 +1200,57 @@ if __name__ == "__main__":
     print(f"   Data points: {len(y)}")
     print(f"   Features: {feat_names}")
     print(f"   Feature count: {len(feat_names)}")
+
+    run_name = (
+        f"PatchTST.v2"
+        f"_amp{AMP_WEIGHT}"
+        f"_slope{SLOPE_WEIGHT}"
+        f"_tanh{TANH_GAIN}"
+        f"_lr{LR}"
+    )
+
+    # wandb 실험 기록
+    wandb.init(
+        project="influenza-patchTST",
+        name=run_name,
+        config={
+            # ===== data =====
+            "seq_len": SEQ_LEN,
+            "pred_len": PRED_LEN,
+            "patch_len": PATCH_LEN,
+            "stride": STRIDE,
+
+            # ===== model =====
+            "d_model": D_MODEL,
+            "n_heads": N_HEADS,
+            "enc_layers": ENC_LAYERS,
+            "ff_dim": FF_DIM,
+            "dropout": DROPOUT,
+            "head_hidden": HEAD_HIDDEN,
+
+            # ===== training =====
+            "epochs": EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "lr": LR,
+            "weight_decay": WEIGHT_DECAY,
+
+            # ===== loss =====
+            "loss": "amplitude_aware_mse",
+            "amp_weight": AMP_WEIGHT,
+            "slope_weight": SLOPE_WEIGHT,
+
+            # ===== activation =====
+            "tanh_alpha": TANH_ALPHA,
+            "tanh_gain": TANH_GAIN,
+            "tanh_learnable": TANH_LEARNABLE,
+
+            # ===== scaler =====
+            "scaler_type": SCALER_TYPE,
+            "recon_w_start": RECON_W_START,
+            "recon_w_end": RECON_W_END,
+            "loss_type": "amp+slope",
+        }
+    )
     
     model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
         X, y, labels, feat_names,
@@ -1416,6 +1270,13 @@ if __name__ == "__main__":
         print(f"   - feature_importance.png")
     else:
         print("⚠️  Feature Importance 계산이 수행되지 않았습니다.")
-    
+
+
+    wandb.log({
+        "plot/last_window": wandb.Image(PLOT_LAST_WINDOW),
+        "plot/test_reconstruction": wandb.Image(PLOT_TEST_RECON),
+        "plot/mae_curves": wandb.Image(PLOT_MA_CURVES),
+    })
+    wandb.finish()
     print("\n✅ 모든 작업 완료!")
     print("="*60)

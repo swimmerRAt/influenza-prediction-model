@@ -1,9 +1,101 @@
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 # PostgreSQL 데이터 로딩
 from database.db_utils import TimeSeriesDB, load_from_postgres
+
+
+def get_pandemic_mask(df: pd.DataFrame) -> pd.Series:
+    """팬데믹 기간(2020년 14주 ~ 2022년 22주) 마스크 반환."""
+    if 'year' not in df.columns or 'week' not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (
+        ((df['year'] == 2020) & (df['week'] >= 14)) |
+        (df['year'] == 2021) |
+        ((df['year'] == 2022) & (df['week'] <= 22))
+    )
+
+
+def interpolate_pandemic_period(df: pd.DataFrame, target_cols: list = None) -> pd.DataFrame:
+    """
+    팬데믹 기간(2020년 14주 ~ 2022년 22주) 데이터를 
+    2017~2019년 주차별 평균 패턴으로 보간
+    
+    Parameters:
+        df: 원본 DataFrame (year, week 컬럼 필수)
+        target_cols: 보간할 컬럼 목록 (None이면 모든 수치형 컬럼)
+    
+    Returns:
+        보간된 DataFrame
+    """
+    df = df.copy()
+    
+    # year, week 컬럼 확인
+    if 'year' not in df.columns or 'week' not in df.columns:
+        print("⚠️  year, week 컬럼이 없어 팬데믹 보간 건너뜀")
+        return df
+    
+    pandemic_mask = get_pandemic_mask(df)
+    
+    pandemic_count = pandemic_mask.sum()
+    if pandemic_count == 0:
+        print("ℹ️  팬데믹 기간 데이터 없음 - 보간 건너뜀")
+        return df
+    
+    print(f"\n🦠 팬데믹 기간 보간 처리")
+    print(f"   팬데믹 기간: 2020년 14주 ~ 2022년 22주 ({pandemic_count}건)")
+    
+    # 보간 대상 컬럼 결정 (year, week 제외한 수치형)
+    if target_cols is None:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        target_cols = [c for c in numeric_cols if c not in ['year', 'week']]
+    
+    if len(target_cols) == 0:
+        print("⚠️  보간할 수치형 컬럼이 없음")
+        return df
+    
+    print(f"   보간 대상 컬럼: {target_cols}")
+    
+    # 1단계: 팬데믹 기간 데이터를 NaN으로 설정
+    for col in target_cols:
+        df.loc[pandemic_mask, col] = np.nan
+    
+    # 2단계: 2017~2019년 정상 계절성 패턴 계산
+    pre_pandemic_mask = (df['year'] >= 2017) & (df['year'] <= 2019)
+    
+    weekly_patterns = {}
+    for col in target_cols:
+        df_pre = df[pre_pandemic_mask & df[col].notna()]
+        if len(df_pre) > 0:
+            weekly_patterns[col] = df_pre.groupby('week')[col].mean()
+        else:
+            weekly_patterns[col] = None
+    
+    # 3단계: 팬데믹 구간을 계절성 패턴으로 보간
+    interpolated_counts = {col: 0 for col in target_cols}
+    
+    for idx in df[pandemic_mask].index:
+        week_num = df.loc[idx, 'week']
+        
+        for col in target_cols:
+            pattern = weekly_patterns.get(col)
+            if pattern is not None:
+                if week_num in pattern.index:
+                    df.loc[idx, col] = pattern[week_num]
+                else:
+                    # 해당 주차 패턴이 없으면 전체 평균 사용
+                    df.loc[idx, col] = pattern.mean()
+                interpolated_counts[col] += 1
+    
+    # 결과 출력
+    for col, count in interpolated_counts.items():
+        if count > 0:
+            print(f"   ✅ {col}: {count}건 보간 완료")
+    
+    return df
+
 
 def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
     # 19-49세 연령 그룹만 필터링
@@ -30,7 +122,12 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
     # 선택된 컬럼만 남기기
     df = df[cols].copy()
 
-    # 결측값 처리
+    # 팬데믹 기간 보간 (2017-2019년 계절성 패턴 사용)
+    # year, week 외의 모든 수치형 컬럼에 적용
+    target_cols_for_pandemic = [c for c in cols if c not in ['year', 'week']]
+    df = interpolate_pandemic_period(df, target_cols=target_cols_for_pandemic)
+
+    # 나머지 결측값 처리 (팬데믹 보간 후 남은 NaN)
     print(f"\n🔧 전처리 결측값 처리 중...")
     valid_cols = []
     for col in cols:
@@ -674,6 +771,37 @@ def batch_corrcoef(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
     return float(np.corrcoef(p_orig, t_orig)[0,1])
 
 # =========================
+# amplitude-aware MSE 함수 만들기 (수영)
+# =========================
+# def amplitude_aware_mse(pred: torch.Tensor, true: torch.Tensor,
+#                         base: float = 1.0,
+#                         amp_weight: float = 0.02):
+#     """
+#     pred, true: (B, H)  -- standard-scaled space
+#     base: 기본 가중치
+#     amp_weight: 실제값 크기에 따른 가중 강도
+#     """
+#     # true 값이 클수록 weight 증가
+#     weight = base + amp_weight * true.abs()
+
+#     loss = weight * (pred - true) ** 2
+#     return loss.mean()
+def amplitude_aware_mse(pred, true,
+                        amp_weight=0.02,
+                        slope_weight=0.3): 
+    amp_w = 1.0 + amp_weight * true.abs()
+
+    if true.shape[1] > 1:
+        slope = torch.relu(true[:, 1:] - true[:, :-1])
+        slope = torch.cat([slope[:, :1], slope], dim=1)
+        slope_w = 1.0 + slope_weight * slope
+    else:
+        slope_w = 1.0
+
+    weight = amp_w * slope_w
+    return (weight * (pred - true) ** 2).mean()
+
+# =========================
 # train & evaluate
 # =========================
 def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list):
@@ -719,7 +847,8 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list)
     ).to(DEVICE)
 
     # Loss / Optim / Scheduler
-    crit = nn.HuberLoss(delta=1.0)
+    # crit = nn.HuberLoss(delta=1.0) (수영)
+    crit = amplitude_aware_mse # (수영)
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
 

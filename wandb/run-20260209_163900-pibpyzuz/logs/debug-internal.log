@@ -1,0 +1,12 @@
+{"time":"2026-02-09T16:39:01.155766+09:00","level":"INFO","msg":"stream: starting","core version":"0.24.1"}
+{"time":"2026-02-09T16:39:01.518755+09:00","level":"INFO","msg":"stream: created new stream","id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:01.519032+09:00","level":"INFO","msg":"handler: started","stream_id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:01.519223+09:00","level":"INFO","msg":"stream: started","id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:01.519302+09:00","level":"INFO","msg":"writer: started","stream_id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:01.519302+09:00","level":"INFO","msg":"sender: started","stream_id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:23.57272+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-02-09T16:39:23.882201+09:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-02-09T16:39:23.889884+09:00","level":"INFO","msg":"stream: closing","id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:23.890281+09:00","level":"INFO","msg":"handler: closed","stream_id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:23.890668+09:00","level":"INFO","msg":"sender: closed","stream_id":"pibpyzuz"}
+{"time":"2026-02-09T16:39:23.890722+09:00","level":"INFO","msg":"stream: closed","id":"pibpyzuz"}
