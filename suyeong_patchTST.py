@@ -110,7 +110,13 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
 
     # 필요한 컬럼만 선택 (age_group은 필터링용이므로 분석에서 제외)
     available_cols = df.columns.tolist()
-    desired_cols = ["year", "week", "ili", "detection_rate"]
+    desired_cols = [
+        "year",
+        "week",
+        "ili",
+        "detection_rate",
+        "delta_ili",
+    ]
 
     # 실제로 존재하는 컬럼만 선택
     cols = [c for c in desired_cols if c in available_cols]
@@ -160,8 +166,29 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
     remaining_nans = df.isna().sum().sum()
     print(f"   ✅ 결측값 처리 완료 (남은 NaN: {remaining_nans}개, 유효 피처: {len(cols)}개)")
 
+    # =========================
+    # Δili (1주 변화량) 추가
+    # =========================
+    df["delta_ili"] = df["ili"].diff()
+    df["delta_ili"] = df["delta_ili"].fillna(0.0)
+
+    # =========================
+    # peak_gap = rolling_max_8_prev - ili
+    #   - rolling_max_8_prev: 직전 시점까지의 8주 최대값
+    #   - 값이 작아질수록(0에 가까울수록) 피크를 갱신 중
+    #   - 피크까지의 거리
+    #   - 수영
+    # =========================
+    rolling_max_8_prev = (
+        df["ili"]
+        .shift(1)
+        .rolling(window=8, min_periods=1)
+        .max()
+    )
+    df["peak_gap"] = rolling_max_8_prev - df["ili"]
+
     # 소수점 둘째 자리로 반올림
-    df = df.round(2)
+    # df = df.round(2)
 
     return df, cols
 
@@ -266,12 +293,12 @@ DROPOUT     = 0.2        # 약간 강화
 HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
 # Amplitude-aware loss 가중치 (수영)
-AMP_WEIGHT   = 0.10
-SLOPE_WEIGHT = 1.20
+AMP_WEIGHT   = 0.08
+SLOPE_WEIGHT = 1.00
 
 # tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
 # 디폴트값 : alpha 1.5, gain 1.2
-TANH_ALPHA = 1.5
+TANH_ALPHA = 8.0
 TANH_GAIN = 6.0
 TANH_LEARNABLE = True
 
@@ -475,15 +502,14 @@ def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndar
     print(f"   입력 데이터: {df.shape}")
     print(f"   컬럼: {list(df.columns)}")
     
-    # ⭐ 타깃/피처 분리: 입력 피처는 오직 ili 한 채널만 사용
-    #    (X_target = ili(t-L:t-1), y = ili(t:t+H))
+    # 입력 피처: ili, delta_ili, peak_gap
     target_col = "ili"
     if target_col not in df.columns:
         raise ValueError(f"'{target_col}' 컬럼이 df에 없습니다: {list(df.columns)}")
 
-    feat_names = [target_col]
+    feat_names = ["ili", "delta_ili", "peak_gap"]
     
-    print(f"   입력 타깃 채널만 사용 (자기복사 방지): {feat_names}")
+    print(f"   사용 입력 피처: {feat_names}")
     
     # 선택된 컬럼만 사용 (이미 상단에서 결측값 처리 완료)
     # 추가 확인 및 보간 (혹시 모를 NaN 대비)
