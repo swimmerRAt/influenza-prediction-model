@@ -4,401 +4,86 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
 
+PostgreSQL에서 인플루엔자 데이터를 로드해 19-49세 연령대 ILI를 예측하는 PatchTST 기반 모델입니다. 멀티스케일 CNN 패치 임베딩, Transformer 인코더, attention pooling, 피크 민감 손실을 결합해 주간 ILI 3주 앞을 예측합니다.
 
-시계열 데이터 기반의 인플루엔자(ILI) 발생률 예측을 위한 PatchTST 딥러닝 모델입니다. PostgreSQL을 활용한 효율적인 대용량 데이터 관리와 Transformer 기반 예측 모델을 결합했습니다.
+## 핵심 요약
 
-**최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 반영
-**실행:** python patchTST.py (서버 실행 불필요, 자동 종료)
-**출력:** 예측 결과, 피처 중요도, 시각화 등 주요 파일 자동 생성/재생성 (4주 예측)
-**주기성 피처:** week_sin, week_cos 자동 생성 및 활용
-**주요 로그:** Best Val MAE, Test MAE 등 성능지표 자동 출력
-**⚠️ 팬데믹 기간 제외:** 2020년 14주~2022년 22주 데이터는 학습에서 자동 제외
+- 메인 실행 파일: [suyeong_patchTST.py](suyeong_patchTST.py)
+- 입력 피처: `ili`, `delta_ili`, `peak_gap`
+- 예측 길이: 3주 (`PRED_LEN=3`)
+- 팬데믹 기간 처리: 2020년 14주 ~ 2022년 22주 구간을 2017-2019 주차 평균 패턴으로 보간
+- 출력: 예측 CSV, 학습 곡선/재구성 플롯, 피처 중요도
 
-## 📊 프로젝트 개요
+## 데이터 흐름
 
-- **목적**: 인플루엔자 유사질환(ILI) 발생률 예측
-- **모델**: PatchTST (Patch Time Series Transformer)
-- **데이터**: 4,983행의 연령대별 시계열 데이터 (2017-2025, 16개 연령대)
-- **데이터베이스**: PostgreSQL 15+ (기존 DuckDB에서 마이그레이션)
-- **성능**: PostgreSQL 기반 효율적 데이터 로딩 및 트랜잭션 관리
-- **비교 모델**: Seasonal SEIRS 수리모델 대비 **우수한 성능** 입증
-- **최신 업데이트**: 2026년 1월 - PostgreSQL 전환 및 팬데믹 기간 데이터 필터링
+1) PostgreSQL에서 `influenza_data` 로드 (실패 시 [merged_influenza_data.csv](merged_influenza_data.csv) 사용)
+2) 19-49세 연령대 필터링
+3) 팬데믹 기간 보간 → 결측값 보정
+4) 파생 피처 생성
+   - `delta_ili`: 주간 변화량
+   - `peak_gap`: 직전 8주 최대값 대비 현재 ILI 차이
+5) PatchTST 학습 및 평가
 
-## 🗂️ 프로젝트 구조
-
-```
-influenza-prediction-model/
-├── patchTST.py                         # 🎯 메인 모델 파일 (학습 & 예측)
-├── seasonal_seirs_model.py             # 📐 비교 모델 (Seasonal SEIRS)
-├── requirements.txt                    # 📦 Python 패키지 의존성
-├── .env                                # ⚙️ 환경 변수 설정
-│
-├── database/                           # 💾 데이터베이스 관리
-│   ├── db_utils.py                    # PostgreSQL 유틸리티 함수
-│   ├── update_database.py             # DB 업데이트 스크립트
-│   ├── check_database.py              # DB 조회 스크립트
-│   └── validate_database.py           # DB 무결성 검증 스크립트
-│
-├── data/                               # 📂 데이터 저장소
-│   └── before/                        # 과거 원본 데이터 (CSV)
-│       ├── flu-0101-2017.csv
-│       ├── flu-0101-2018.csv
-│       └── ...
-│
-├── doc/                                # 📚 문서
-│   └── QUICKSTART.md                  # 빠른 시작 가이드
-│
-└── output/                             # 📈 출력 결과
-    ├── ili_predictions.csv            # 예측 결과
-    ├── plot_loss_curves.png           # 손실 곡선
-    ├── plot_predictions.png           # 예측 시각화
-    ├── seirs_model_results.png        # SEIRS 모델 결과
-    └── plot_ma_curves.png             # 이동평균 곡선
-```
-
-
-## 💾 데이터 및 실행 요약
-
-- **최신 데이터:** 2025년 47주차(11월 말~12월 초)까지 반영
-- **실행 방법:**
-   ```bash
-   python patchTST.py
-   ```
-   (서버 실행 불필요, 실행 후 자동 종료)
-- **출력 파일:**
-   - ili_predictions.csv: 예측 결과
-   - feature_importance.csv, feature_importance.png: 피처 중요도
-   - plot_ma_curves.png, plot_last_window.png, plot_test_reconstruction.png: 시각화
-   (모두 자동 생성/재생성 가능)
-- **주기성 피처:** week_sin, week_cos (주차 기반 사인/코사인 변환, 자동 생성)
-- **주요 로그:**
-   - Best Val MAE(검증): 8.10
-   - Test MAE(테스트): 10.76
-   (실행 로그에서 확인 가능)
-## 🎯 고급 예측 기능
-
-### 1️⃣ 연령대별 동학 (Age Group Dynamics)
-
-유행은 보통 어린이 집단에서 먼저 시작되어 성인층으로 전파됩니다. 이를 활용하여:
-- **선행 지표 연령대**: 0-6세, 7-12세의 ILI 데이터를 외생 변수로 사용
-- **효과**: 성인 연령대(예: 19-49세)의 피크를 더 정확하게 예측
-- **설정**:
-  ```python
-  # patchTST.py Config 섹션
-  USE_AGE_GROUP_DYNAMICS = True  # 활성화/비활성화
-  LEAD_AGE_GROUPS = ["0-6세", "7-12세"]  # 선행 지표 연령대
-  ```
-
-### 2️⃣ 트렌드 데이터 통합 (Google, Naver, Twitter)
-
-검색량/언급량 데이터는 병원 방문 전의 행동 패턴을 반영하여 예측 시차를 줄입니다:
-- **데이터 소스**: 
-  - `ds_0701`: Google Trends (독감 관련 검색어)
-  - `ds_0801`: Naver Trends (네이버 검색 데이터)
-  - `ds_0901`: Twitter Trends (트위터 언급량)
-- **효과**: 피크 시작 1-2주 전에 검색/언급량이 증가하는 패턴 활용
-- **데이터베이스**: PostgreSQL `trends` 데이터베이스에 별도 저장
-- **설정**:
-  ```python
-  # patchTST.py Config 섹션
-  USE_TRENDS_DATA = True  # 활성화/비활성화
-  TRENDS_DB_NAME = "trends"  # PostgreSQL DB 이름
-  TRENDS_TABLE_NAME = "trends_data"  # 테이블 이름
-  ```
-
-### 3️⃣ 트렌드 데이터 업데이트
-
-**단일 명령으로 모든 데이터베이스 업데이트:**
-```bash
-# 인플루엔자 데이터 + 트렌드 데이터 한 번에 업데이트
-python database/update_database.py
-```
-
-자동으로 수행되는 작업:
-1. **인플루엔자 데이터 업데이트** (influenza DB)
-   - API에서 인플루엔자 데이터 다운로드
-   - data/before 폴더의 과거 데이터 로딩
-   - 모든 데이터 병합 및 PostgreSQL influenza DB에 저장
-   
-2. **트렌드 데이터 업데이트** (trends DB)
-   - API에서 Google, Naver, Twitter Trends 데이터 다운로드 (ds_0701, ds_0801, ds_0901)
-   - 3개 데이터 병합 (year, week 기준)
-   - PostgreSQL trends 데이터베이스에 저장
-   - CSV 백업 생성 (`trends_data.csv`)
-
-### 4️⃣ Peak-Aware Loss Function
-
-피크 예측 정확도 향상을 위한 맞춤형 손실 함수:
-- **피크 가중치 (Alpha)**: 8.0 (상위 25% 유행 구간에 강력한 가중치)
-- **진폭 보존 (Beta)**: 0.3 (피크 높이 보존)
-- **Horizon Weighting**: 먼 미래 예측에 더 높은 가중치 (exponential 모드)
-- **Log Transform**: 타겟 변수에 log(1+x) 변환 적용하여 피크 스케일 정규화
-
-### 📊 예측 성능 향상
-
-이러한 고급 기능들을 조합하면:
-- ✅ **피크 타이밍 예측**: 1-2주 더 정확하게 예측
-- ✅ **피크 높이 예측**: 진폭 보존 손실로 과소/과대 예측 감소
-- ✅ **조기 경보**: Google Trends로 유행 시작 조기 감지
-- ✅ **전파 패턴**: 연령대별 동학으로 유행 확산 경로 파악
-## � 모델 비교: PatchTST vs Seasonal SEIRS
-
-본 프로젝트에서는 딥러닝 모델(PatchTST)과 전통적인 역학 수리모델(Seasonal SEIRS)의 성능을 비교했습니다.
-
-### 평가 방법
-- **테스트 데이터**: 전체 데이터의 최신 15% 사용
-- **평가 지표**: MAE (평균 절대 오차), MSE (평균 제곱 오차), RMSE (평균 제곱근 오차)
-- **동일 조건**: 두 모델 모두 동일한 테스트 세트에서 평가
-
-### 성능 비교 결과
-
-| 모델 | MAE ↓ | MSE ↓ | RMSE ↓ |
-|------|-------|-------|--------|
-| **PatchTST** (딥러닝) | 우수 | 우수 | 우수 |
-| Seasonal SEIRS (수리모델) | - | - | - |
-
-> 💡 **결과**: PatchTST 모델이 전통적인 역학 수리모델보다 더 정확한 예측 성능을 보였습니다.
-> 
-> 딥러닝 모델은 복잡한 패턴과 비선형 관계를 학습할 수 있어, 수리모델이 포착하기 어려운 계절성과 트렌드를 더 잘 반영합니다.
-
-### 모델별 실행 방법
-
-**PatchTST 모델 실행**:
-```bash
-python patchTST.py
-```
-
-**Seasonal SEIRS 모델 실행**:
-```bash
-python seasonal_seirs_model.py
-```
-
----
-
-## 💾 데이터베이스 (PostgreSQL)
-
-### 왜 PostgreSQL인가?
-
-PostgreSQL은 안정적이고 확장 가능한 오픈소스 관계형 데이터베이스로, 시계열 데이터 처리와 실시간 분석에 탁월한 성능을 제공합니다.
-
-### 주요 기능
-
-```python
-from database.db_utils import TimeSeriesDB, load_from_postgres
-
-# 🔹 전체 데이터 로드
-df = load_from_postgres(
-    table_name="influenza_data"
-)
-
-# 🔹 특정 컬럼만 로드 (메모리 절약)
-df = load_from_postgres(
-    columns=['year', 'week', 'ili', 'vaccine_rate'],
-    where="year >= 2020"
-)
-
-# 🔹 조건부 필터링
-df = load_from_postgres(
-    where="year = 2023 AND week <= 26",
-    limit=10000
-)
-```
-
-### 데이터베이스 구조 (2026년 1월 업데이트)
-
-- **데이터베이스**: `influenza` (PostgreSQL 15+)
-- **테이블**: `influenza_data`
-- **행 수**: **4,983 rows** (연령대별 시계열 데이터)
-- **컬럼 수**: 9 columns
-- **주요 컬럼**:
-   - `연도`(year), `주차`(week): 데이터의 연도 및 주차 정보 (2017-2025)
-   - `연령대`: 16개 연령대 (0세, 1-6세, 7-12세, 13-18세, 19-49세, 50-64세, 65세이상 등)
-   - `의사환자 분율`(ili): 인플루엔자 유사질환(ILI) 발생률 (모델 타겟)
-   - `입원환자 수`(hospitalization): 인플루엔자 입원 환자 수
-   - `아형`(subtype): 인플루엔자 바이러스 아형 (A(H1N1)pdm09, A(H3N2), B, A)
-   - `인플루엔자 검출률`(detection_rate): 바이러스 검출 비율
-   - `예방접종률`(vaccine_rate): 백신 접종률
-   - `응급실 인플루엔자 환자`(emergency_patients): 응급실 방문 인플루엔자 환자 수
-   - (추가) `week_sin`, `week_cos`: 주차 기반 주기성 특성 (사인/코사인 변환, 자동 생성)
-
-### 🔄 데이터 병합 로직 (2026년 1월 개선)
-
-**개선 사항**:
-- ✅ 연령대별 데이터 완전 보존 (436행 → **4,983행**)
-- ✅ 아형 다양성 유지 (1개 → **4개 아형**)
-- ✅ 입원환자 수 합산 로직 수정 (중복 데이터셋 값 합산)
-- ✅ 데이터 손실 방지 및 무결성 검증 강화
-
-**병합 프로세스**:
-```
-1. 원본 CSV 로드 (68개 파일)
-   ds_0101: 의사환자 분율
-   ds_0103, ds_0104: 입원환자 수
-   ds_0105, ds_0107: 아형별 검출률
-   ds_0106, ds_0108: 연령대별 검출률
-   ds_0109: 응급실 환자
-   ds_0110: 예방접종률
-   ↓
-2. 연령대별 데이터 통합
-   - 연도 + 주차 + 연령대를 키로 사용
-   - 입원환자 수: 여러 데이터셋 값 합산
-   - 의사환자 분율/예방접종률: 평균값
-   ↓
-3. 우세 아형 선택
-   - 각 연도/주차에서 최고 검출률 아형 선택
-   - 모든 연령대 행에 아형 정보 추가
-   ↓
-4. PostgreSQL 저장
-   - 4,983행 × 9열
-   - 16개 연령대 × 436개 시점
-```
-
-### 🚨 데이터 품질 관리: 팬데믹 기간 제외
-
-**중요**: 모델 학습 시 **COVID-19 팬데믹 기간 (2020년 14주 ~ 2022년 22주)**의 데이터를 **자동으로 제외**합니다.
-
-#### 제외 이유
-- 팬데믹 기간 동안 사회적 거리두기, 마스크 착용 등으로 인해 인플루엔자 발생률이 비정상적으로 낮음
-- 이상치(outlier) 패턴이 모델 학습에 부정적 영향을 미쳐 예측 정확도 저하
-- 정상 계절성 패턴을 학습하기 위해 해당 기간 데이터 제외
-
-#### 구현
-```python
-# patchTST.py의 load_and_prepare() 함수에서 자동 필터링
-pandemic_start = (2020, 14)
-pandemic_end = (2022, 22)
-pandemic_mask = ~((df['year'] > pandemic_start[0]) | 
-                  ((df['year'] == pandemic_start[0]) & (df['week'] >= pandemic_start[1]))) & \
-                 ((df['year'] < pandemic_end[0]) | 
-                  ((df['year'] == pandemic_end[0]) & (df['week'] <= pandemic_end[1])))
-df = df[pandemic_mask]
-```
-
-### 데이터 검증
-
-데이터베이스 업데이트 후 데이터 무결성을 확인합니다:
+## 실행 방법
 
 ```bash
-# 인플루엔자 데이터 + 트렌드 데이터 검증
-python database/validate_database.py
+python suyeong_patchTST.py
 ```
 
-**검증 항목**:
+## 의존성
 
-#### 1️⃣ 인플루엔자 데이터 검증
-- ✅ 연령대 데이터 보존 확인
-- ✅ 아형 다양성 확인
-- ✅ 입원환자 수 합산 정확도
-- ✅ 컬럼 정렬 일관성 (ili, detection_rate, hospitalization 등)
-- ✅ 팬데믹 vs 비팬데믹 기간 데이터 비교
-- ✅ CSV 백업 vs PostgreSQL DB 데이터 일치도
-
-#### 2️⃣ 트렌드 데이터 검증
-- ✅ Google Trends 데이터 일치도 (google_* 컬럼)
-- ✅ Naver Trends 데이터 일치도 (naver_* 컬럼)
-- ✅ Twitter Trends 데이터 일치도 (twitter_* 컬럼)
-- ✅ CSV 백업 vs PostgreSQL trends DB 데이터 일치도
-- ✅ 컬럼별 match percentage 보고
-
-**출력 예시**:
-```
-=== Influenza Data Validation ===
-✅ Validation successful
-Match percentage: 98.5%
-Max diff: 0.03 (hospitalization)
-
-=== Trends Data Validation ===
-✅ Validation successful
-Overall match: 99.2%
-Top 10 best matching columns:
-  - google_독감증상: 100.0%
-  - naver_해열제: 99.8%
-  ...
-
-✅ Both validations passed (2/2)
+```bash
+pip install -r requirements.txt
 ```
 
-## 🤖 모델 아키텍처 (PatchTST)
+PostgreSQL 연결 설정은 [database/db_utils.py](database/db_utils.py)의 환경 변수를 사용합니다. 연결이 실패하면 CSV로 자동 대체합니다.
 
-### PatchTST란?
+## 출력 파일
 
-**PatchTST (Patch Time Series Transformer)**는 시계열 데이터를 패치 단위로 나누어 처리하는 Transformer 기반 모델입니다. 전통적인 포인트 단위 처리보다 효율적이고 정확한 예측이 가능합니다.
+- [ili_predictions.csv](ili_predictions.csv) - 예측 결과
+- [feature_importance.csv](feature_importance.csv) - 피처 중요도 테이블
+- [feature_importance.png](feature_importance.png) - 피처 중요도 시각화
+- [plot_last_window.png](plot_last_window.png) - 마지막 윈도우 예측
+- [plot_test_reconstruction.png](plot_test_reconstruction.png) - 테스트 재구성
+- [plot_ma_curves.png](plot_ma_curves.png) - MAE 학습 곡선
 
-### 핵심 특징
+## 모델 개요
 
-1. **패치 기반 처리**
-   - 시퀀스를 작은 패치로 분할 (Patch Length: 4)
-   - 각 패치를 독립적으로 임베딩
-   - 계산 효율성과 장기 의존성 학습 향상
+- 멀티스케일 CNN 패치 임베딩 (k=1/3/5/7 + dilation 분기)
+- TokenConvMixer로 패치 토큰 간 로컬 연속성 강화
+- Transformer Encoder + attention pooling
+- 피크 과소예측 패널티 포함한 amplitude-aware MSE
 
-2. **멀티스케일 특징 추출**
-   - 다양한 커널 크기 (1, 3, 5, 7)로 CNN 적용
-   - 단기/중기/장기 패턴 동시 포착
-   - 4개 스케일의 특징을 결합
-
-3. **Transformer Encoder**
-   - Multi-head Attention (2 heads)
-   - 4개의 Encoder 레이어
-   - 시계열 간 복잡한 관계 학습
-
-### 모델 하이퍼파라미터
+## 주요 하이퍼파라미터
 
 ```python
 # 시퀀스 설정
-   SEQ_LEN = 12        # 입력 시퀀스 길이 (12주)
-   PRED_LEN = 4        # 예측 길이 (4주 — 한 달)
-PATCH_LEN = 4       # 패치 크기
-STRIDE = 1          # 패치 간 간격
+SEQ_LEN = 12
+PRED_LEN = 3
+PATCH_LEN = 4
+STRIDE = 1
 
 # 모델 구조
-D_MODEL = 128       # 임베딩 차원
-N_HEADS = 2         # Attention 헤드 수
-ENC_LAYERS = 4      # Encoder 레이어 수
-FF_DIM = 128        # Feed-forward 차원
-DROPOUT = 0.3       # 드롭아웃 비율
+D_MODEL = 64
+N_HEADS = 4
+ENC_LAYERS = 3
+FF_DIM = 64
+DROPOUT = 0.2
 
 # 학습 설정
-EPOCHS = 100
-BATCH_SIZE = 64
-LEARNING_RATE = 5e-4
-WEIGHT_DECAY = 5e-4
+EPOCHS = 200
+BATCH_SIZE = 32
+LR = 3e-4
+WEIGHT_DECAY = 5e-3
 ```
 
-### 모델 구조
+## 팬데믹 기간 처리
 
-```
-입력 (12주 × F features)
-    ↓
-Patch 분할 (3 patches × 4 timesteps)
-    ↓
-Multi-scale CNN (커널 1,3,5,7)
-    ↓
-Patch Embedding (128 dim)
-    ↓
-Positional Encoding
-    ↓
-Transformer Encoder (4 layers)
-    ↓
-Flatten & MLP
-   ↓
-출력 (4주 예측)
-```
+팬데믹 구간은 제거하지 않고 보간합니다. 2017-2019년 주차별 평균 패턴으로 대체하여 계절성을 유지합니다. 관련 로직은 [suyeong_patchTST.py](suyeong_patchTST.py) 내 `interpolate_pandemic_period()` 함수에 구현되어 있습니다.
 
-### 손실 함수
+## 실험 로깅
 
-- **Primary Loss**: MAE (Mean Absolute Error)
-- **Regularization**: Correlation Loss (예측-실제값 상관관계 유지)
-
-## 📈 데이터 설명
-
-### 데이터 소스
-
-1. **인플루엔자 데이터**: 주간 ILI 발생률
-2. **백신 데이터**: 주간 백신 접종률
-3. **호흡기 질환 데이터**: 호흡기 감염 지수
-4. **기후 데이터**: 온도, 습도, 강수량 등
-
-### 데이터 수집 기간
+WandB 로깅이 기본 활성화입니다. 실행 환경에 따라 `wandb` 설정이 필요할 수 있습니다.
 
 - **2017년 ~ 2025년** (9년간)
 - **주간 단위** 시계열 데이터
