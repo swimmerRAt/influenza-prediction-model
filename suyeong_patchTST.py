@@ -293,8 +293,8 @@ DROPOUT     = 0.2        # 약간 강화
 HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
 # Amplitude-aware loss 가중치 (수영)
-AMP_WEIGHT   = 0.08
-SLOPE_WEIGHT = 1.00
+AMP_WEIGHT   = 0.02
+SLOPE_WEIGHT = 0.30
 
 # tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
 # 디폴트값 : alpha 1.5, gain 1.2

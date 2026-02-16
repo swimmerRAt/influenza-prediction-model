@@ -1,0 +1,12 @@
+{"time":"2026-02-15T21:09:35.522163+09:00","level":"INFO","msg":"stream: starting","core version":"0.24.1"}
+{"time":"2026-02-15T21:09:35.86943+09:00","level":"INFO","msg":"stream: created new stream","id":"syum5jve"}
+{"time":"2026-02-15T21:09:35.869803+09:00","level":"INFO","msg":"sender: started","stream_id":"syum5jve"}
+{"time":"2026-02-15T21:09:35.869805+09:00","level":"INFO","msg":"writer: started","stream_id":"syum5jve"}
+{"time":"2026-02-15T21:09:35.87022+09:00","level":"INFO","msg":"stream: started","id":"syum5jve"}
+{"time":"2026-02-15T21:09:35.870268+09:00","level":"INFO","msg":"handler: started","stream_id":"syum5jve"}
+{"time":"2026-02-15T21:12:49.129005+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-02-15T21:12:49.451473+09:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-02-15T21:12:49.459509+09:00","level":"INFO","msg":"stream: closing","id":"syum5jve"}
+{"time":"2026-02-15T21:12:49.459785+09:00","level":"INFO","msg":"handler: closed","stream_id":"syum5jve"}
+{"time":"2026-02-15T21:12:49.460055+09:00","level":"INFO","msg":"sender: closed","stream_id":"syum5jve"}
+{"time":"2026-02-15T21:12:49.460085+09:00","level":"INFO","msg":"stream: closed","id":"syum5jve"}

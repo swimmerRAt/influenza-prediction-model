@@ -1,0 +1,30 @@
+
+============================================================
+🚀 Walk-Forward Validation 실행 중...
+============================================================
+
+================================================================================
+🔬 Walk-Forward Validation 시작
+   초기 훈련 윈도우: 270
+   테스트 윈도우: 26
+================================================================================
+
+[Fold 1] Train:230 Val:40 Test:26
+           Train period: 2017-W36 ~ 2021-W53
+           Test period:  2022-W41 ~ 2023-W13
+  Epoch   1: Val Loss=0.44023
+  Epoch  30: Val Loss=0.01041
+  Epoch  60: Val Loss=0.01561
+  Early stopping at epoch 63
+Traceback (most recent call last):
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/patchTST.py", line 1358, in <module>
+    wfv_results = walk_forward_validation(
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/patchTST.py", line 1237, in walk_forward_validation
+    yhat_sc = np.concatenate(preds, axis=0)
+ValueError: need at least one array to concatenate
+Traceback (most recent call last):
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/patchTST.py", line 1358, in <module>
+    wfv_results = walk_forward_validation(
+  File "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/patchTST.py", line 1237, in walk_forward_validation
+    yhat_sc = np.concatenate(preds, axis=0)
+ValueError: need at least one array to concatenate

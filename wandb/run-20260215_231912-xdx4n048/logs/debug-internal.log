@@ -1,0 +1,15 @@
+{"time":"2026-02-15T23:19:12.892227+09:00","level":"INFO","msg":"stream: starting","core version":"0.24.1"}
+{"time":"2026-02-15T23:19:13.238925+09:00","level":"INFO","msg":"stream: created new stream","id":"xdx4n048"}
+{"time":"2026-02-15T23:19:13.239132+09:00","level":"INFO","msg":"handler: started","stream_id":"xdx4n048"}
+{"time":"2026-02-15T23:19:13.239241+09:00","level":"INFO","msg":"sender: started","stream_id":"xdx4n048"}
+{"time":"2026-02-15T23:19:13.239244+09:00","level":"INFO","msg":"writer: started","stream_id":"xdx4n048"}
+{"time":"2026-02-15T23:19:13.23943+09:00","level":"INFO","msg":"stream: started","id":"xdx4n048"}
+{"time":"2026-02-15T23:34:36.53443+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": read tcp 192.168.0.17:51998->35.186.228.49:443: read: connection reset by peer"}
+{"time":"2026-02-15T23:45:47.493717+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/suuuuwimmer-jeonbuk-national-university/influenza-patchtst/xdx4n048/file_stream\": read tcp 192.168.0.17:52001->35.186.228.49:443: read: connection reset by peer"}
+{"time":"2026-02-16T00:16:01.553333+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/files/suuuuwimmer-jeonbuk-national-university/influenza-patchtst/xdx4n048/file_stream\": read tcp 192.168.0.17:52055->35.186.228.49:443: read: connection reset by peer"}
+{"time":"2026-02-16T00:35:55.5078+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-02-16T00:35:55.816861+09:00","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-02-16T00:35:55.822547+09:00","level":"INFO","msg":"stream: closing","id":"xdx4n048"}
+{"time":"2026-02-16T00:35:55.822858+09:00","level":"INFO","msg":"handler: closed","stream_id":"xdx4n048"}
+{"time":"2026-02-16T00:35:55.823289+09:00","level":"INFO","msg":"sender: closed","stream_id":"xdx4n048"}
+{"time":"2026-02-16T00:35:55.823321+09:00","level":"INFO","msg":"stream: closed","id":"xdx4n048"}

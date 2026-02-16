@@ -18,345 +18,48 @@ PostgreSQL에서 인플루엔자 데이터를 로드해 19-49세 연령대 ILI�
 
 1) PostgreSQL에서 `influenza_data` 로드 (실패 시 [merged_influenza_data.csv](merged_influenza_data.csv) 사용)
 2) 19-49세 연령대 필터링
-3) 팬데믹 기간 보간 → 결측값 보정
-4) 파생 피처 생성
-   - `delta_ili`: 주간 변화량
-   - `peak_gap`: 직전 8주 최대값 대비 현재 ILI 차이
-5) PatchTST 학습 및 평가
 
-## 실행 방법
 
-```bash
-python suyeong_patchTST.py
+## 데이터 로딩과 전처리
+
+데이터 로딩은 [database/db_utils.py](database/db_utils.py)의 `TimeSeriesDB`와 `load_from_postgres()`를 사용합니다. 기본값은 `.env`의 PostgreSQL 환경 변수이며, 연결 실패 시 CSV로 대체합니다.
+
+### PostgreSQL 연결 환경 변수
+
+```
+PG_HOST=localhost
+PG_PORT=5432
+PG_DB=influenza
+PG_USER=postgres
+PG_PASSWORD=postgres
 ```
 
-## 의존성
-
-```bash
-pip install -r requirements.txt
-```
-
-PostgreSQL 연결 설정은 [database/db_utils.py](database/db_utils.py)의 환경 변수를 사용합니다. 연결이 실패하면 CSV로 자동 대체합니다.
-
-## 출력 파일
-
-- [ili_predictions.csv](ili_predictions.csv) - 예측 결과
-- [feature_importance.csv](feature_importance.csv) - 피처 중요도 테이블
-- [feature_importance.png](feature_importance.png) - 피처 중요도 시각화
-- [plot_last_window.png](plot_last_window.png) - 마지막 윈도우 예측
-- [plot_test_reconstruction.png](plot_test_reconstruction.png) - 테스트 재구성
-- [plot_ma_curves.png](plot_ma_curves.png) - MAE 학습 곡선
-
-## 모델 개요
-
-- 멀티스케일 CNN 패치 임베딩 (k=1/3/5/7 + dilation 분기)
-- TokenConvMixer로 패치 토큰 간 로컬 연속성 강화
-- Transformer Encoder + attention pooling
-- 피크 과소예측 패널티 포함한 amplitude-aware MSE
-
-## 주요 하이퍼파라미터
-
-```python
-# 시퀀스 설정
-SEQ_LEN = 12
-PRED_LEN = 3
-PATCH_LEN = 4
-STRIDE = 1
-
-# 모델 구조
-D_MODEL = 64
-N_HEADS = 4
-ENC_LAYERS = 3
-FF_DIM = 64
-DROPOUT = 0.2
-
-# 학습 설정
-EPOCHS = 200
-BATCH_SIZE = 32
-LR = 3e-4
-WEIGHT_DECAY = 5e-3
-```
-
-## 팬데믹 기간 처리
-
-팬데믹 구간은 제거하지 않고 보간합니다. 2017-2019년 주차별 평균 패턴으로 대체하여 계절성을 유지합니다. 관련 로직은 [suyeong_patchTST.py](suyeong_patchTST.py) 내 `interpolate_pandemic_period()` 함수에 구현되어 있습니다.
-
-## 실험 로깅
-
-WandB 로깅이 기본 활성화입니다. 실행 환경에 따라 `wandb` 설정이 필요할 수 있습니다.
-
-- **2017년 ~ 2025년** (9년간)
-- **주간 단위** 시계열 데이터
-- **13개 데이터셋** 통합
-
-### 데이터 로딩 프로세스
-
-#### 1. PostgreSQL에서 데이터 로드 (기본)
-
-모델은 자동으로 PostgreSQL 데이터베이스를 사용합니다:
+### 로딩 예시
 
 ```python
 from database.db_utils import load_from_postgres
 
-# patchTST.py에서 자동 호출
-df = load_data_from_postgres()
-
-# 환경 변수를 통해 PostgreSQL 연결 정보 설정 (.env 파일):
-# PG_HOST=localhost
-# PG_PORT=5432
-# PG_DB=influenza
-# PG_USER=postgres
-# PG_PASSWORD=postgres
-```
-
-**로딩 흐름**:
-```
-1. 환경 변수 확인 (USE_DUCKDB=true)
-   ↓
-2. DuckDB 파일 존재 확인
-   ↓
-3. SQL 쿼리로 데이터 로드
-   SELECT * FROM influenza_data
-   ↓
-4. Pandas DataFrame 반환 (0.78초, 300만 행)
-   ↓
-5. 실패 시 CSV 폴백
-```
-
-#### 2. 데이터베이스 업데이트 프로세스
-
-새로운 데이터를 데이터베이스에 추가하는 방법:
-
-```bash
-# update_database.py 실행
-python database/update_database.py
-```
-
-**업데이트 흐름**:
-```
-1. data/before 폴더의 CSV 파일 스캔
-   (flu-0101-2017.csv, flu-0101-2018.csv, ...)
-   ↓
-2. 모든 CSV 파일 로드 및 병합
-   - pandas.concat() 사용
-   - ignore_index=True로 재인덱싱
-   ↓
-3. 중복 제거
-   - drop_duplicates() 적용
-   - year, week 기준 정렬
-   ↓
-4. PostgreSQL에 저장
-   - CREATE TABLE IF NOT EXISTS
-   - INSERT ON CONFLICT DO NOTHING
-   - 인덱스 생성 (year, week)
-   ↓
-5. 데이터베이스 최적화
-   - VACUUM 명령 실행
-   - 통계 업데이트
-```
-
-### 데이터베이스 전처리 파이프라인
-
-#### 1. 원본 데이터 → PostgreSQL 변환
-
-```python
-from database.db_utils import TimeSeriesDB
-
-# CSV를 PostgreSQL로 변환
-with TimeSeriesDB() as db:  # 환경 변수에서 연결 정보 자동 로드
-    db.import_csv_to_db(
-        csv_path="data/merged/merged_influenza_data.csv",
-        table_name="influenza_data"
-    )
-```
-
-**변환 과정**:
-```
-CSV 파일
-   ↓
-1. pandas.read_csv() 
-   - 청크 단위 읽기 (메모리 효율)
-   ↓
-2. 데이터 타입 최적화
-   - int64 → int32 (메모리 절약)
-   - object → category (문자열 압축)
-   ↓
-3. PostgreSQL INSERT
-   - Batch insert
-   - 트랜잭션 사용
-   ↓
-4. 인덱싱
-   - CREATE INDEX ON year, week
-   ↓
-PostgreSQL 테이블 (influenza_data)
-```
-
-#### 2. 데이터베이스 내 전처리 (SQL 기반)
-
-PostgreSQL에서 SQL로 직접 전처리 가능:
-
-```python
-# 특정 연도만 필터링
 df = load_from_postgres(
-    where="year >= 2020 AND year <= 2023"
-)
-
-# 특정 컬럼만 선택 (메모리 절약)
-df = load_from_postgres(
-    columns=['year', 'week', 'ili', 'vaccine_rate']
-)
-
-# 집계 쿼리 (연도별 평균)
-with TimeSeriesDB("database/influenza_data.duckdb") as db:
-    result = db.conn.execute("""
-        SELECT year, AVG(ili) as avg_ili
-        FROM influenza_data
-        GROUP BY year
-        ORDER BY year
-    """).fetchdf()
-```
-
-**SQL 전처리의 장점**:
-- 메모리 효율: 필요한 데이터만 로드
-- 속도: 데이터베이스 엔진 최적화
-- 유연성: 복잡한 필터링 및 집계
-
-### 모델 입력을 위한 전처리
-
-DuckDB에서 로드한 후 모델 학습을 위한 추가 전처리:
-
-#### 1. 주간 → 일간 보간 (`weekly_to_daily_interp`)
-
-```python
-# patchTST.py의 load_and_prepare() 함수에서 수행
-
-# 주간 데이터를 일간으로 변환
-df_daily = weekly_to_daily_interp(
-    df,
-    date_col="label",
-    target_col="ili",
-    method="cubic"  # Cubic spline interpolation
+    table_name="influenza_data",
+    columns=["year", "week", "age_group", "ili", "detection_rate"],
+    where="year >= 2017",
+    order_by="year, week"
 )
 ```
 
-**보간 과정**:
-```
-주간 데이터 (52 rows/year)
-   ↓
-1. 날짜 파싱 (2023-2024 W15 → datetime)
-   ↓
-2. Cubic Spline 보간
-   - scipy.interpolate.CubicSpline
-   - 부드러운 곡선 생성
-   ↓
-3. 일간 데이터 생성 (365 rows/year)
-   ↓
-4. 누락값 처리 (forward fill)
-```
+`load_from_postgres()`는 내부적으로 `TimeSeriesDB.load_data()`를 호출하며, `columns`, `where`, `order_by`, `limit` 인자를 지원합니다.
 
-#### 2. 특징 선택 (Feature Engineering)
+### 전처리 흐름 (suyeong_patchTST.py)
 
-```python
-# 자동 특징 선택 (use_exog="auto")
-if use_exog == "auto":
-    # 백신 데이터 확인
-    has_vax = "vaccine_rate" in df.columns
-    
-    # 호흡기 데이터 확인
-    has_resp = "respiratory_index" in df.columns
-    
-    # 기후 특징 추출
-    climate_feats = [c for c in df.columns 
-                     if any(k in c.lower() for k in 
-                     ['temp', 'humid', 'rain', 'wind'])]
-    
-    # 최종 특징 조합
-    features = ["ili"]
-    if has_vax: features.append("vaccine_rate")
-    if has_resp: features.append("respiratory_index")
-    features.extend(climate_feats)
-```
+1) `age_group`이 있을 경우 19-49세만 필터링
+2) 분석에 필요한 컬럼만 선택 (`year`, `week`, `ili`, `detection_rate`, `delta_ili`)
+3) 팬데믹 기간(2020년 14주 ~ 2022년 22주)을 2017-2019 주차 평균 패턴으로 보간
+4) 수치형 컬럼 결측값 선형 보간 후 ffill/bfill, 남은 결측은 중앙값 대체
+5) 파생 피처 생성
+   - `delta_ili`: 주간 ILI 변화량
+   - `peak_gap`: 직전 8주 최대값 대비 현재 ILI 차이
 
-**특징 선택 전략**:
-- `use_exog="auto"`: 사용 가능한 모든 특징 (기본값)
-- `use_exog="none"`: ILI만 사용
-- `use_exog="vax"`: ILI + 백신
-- `use_exog="resp"`: ILI + 호흡기
-- `use_exog="both"`: ILI + 백신 + 호흡기
-- `use_exog="all"`: 모든 특징 + 기후
-
-#### 3. 정규화 (Normalization)
-
-```python
-from sklearn.preprocessing import RobustScaler
-
-# Train/Val/Test 분할 후 정규화
-scaler_x = RobustScaler()  # 특징 정규화
-scaler_y = RobustScaler()  # 타겟 정규화
-
-# Train 데이터로 fit
-X_train_scaled = scaler_x.fit_transform(X_train)
-y_train_scaled = scaler_y.fit_transform(y_train)
-
-# Val/Test는 transform만
-X_val_scaled = scaler_x.transform(X_val)
-y_val_scaled = scaler_y.transform(y_val)
-```
-
-**RobustScaler 사용 이유**:
-- 중앙값과 IQR 사용 (이상치에 강건)
-- 공식: `(X - median) / IQR`
-- StandardScaler보다 안정적
-
-#### 4. 시퀀스 생성 (Sequence Generation)
-
-```python
-# PatchTSTDataset에서 시퀀스 생성
-class PatchTSTDataset:
-    def __getitem__(self, i):
-        # 입력 시퀀스 (12주)
-        seq_X = self.X[i:i+self.seq_len, :]  # (12, F)
-        
-      # 타겟 (4주)
-      seq_y = self.y[i+self.seq_len:i+self.seq_len+self.pred_len]  # (4,)
-        
-        # 패치 분할 (12 → 3 patches × 4 timesteps)
-        patches = []
-        for j in range(0, self.seq_len, self.patch_len):
-            patch = seq_X[j:j+self.patch_len, :]  # (4, F)
-            patches.append(patch)
-        
-        return X_patch, seq_y, label
-```
-
-**시퀀스 예시**:
-```
-원본 데이터: [Week 1, Week 2, ..., Week 100]
-              ↓
-시퀀스 1: 
-  입력: [Week 1-12]  (12주)
-   타겟: [Week 13-16] (4주)
-  
-시퀀스 2:
-  입력: [Week 2-13]  (12주)
-   타겟: [Week 14-17] (4주)
-  
-... (슬라이딩 윈도우)
-```
-
-### 전체 데이터 파이프라인 요약
-
-```
-📂 원본 데이터 (CSV files in data/before/)
-   ↓
-💾 [데이터베이스 업데이트]
-   - 병합 및 중복 제거
-   - PostgreSQL 저장
-   ↓
-🔍 [데이터 로딩]
-   - PostgreSQL에서 SQL 쿼리
-   - DataFrame 반환
-   ↓
+전처리 결과는 [final_data.csv](final_data.csv)로 저장되며, 이후 모델 입력으로 사용됩니다.
 🚨 [데이터 필터링]
    - 팬데믹 기간 자동 제외
    - (2020-W14 ~ 2022-W22)
@@ -629,18 +332,12 @@ USE_RAW_DATA=true
 python patchTST.py --age-group 65세이상 --raw-data
 ```
 
-## 📚 추가 문서
-
-- [USAGE.md](USAGE.md) - 상세 사용 가이드
-- [doc/DUCKDB_GUIDE.md](doc/DUCKDB_GUIDE.md) - DuckDB 사용법
-- [doc/QUICKSTART.md](doc/QUICKSTART.md) - 빠른 시작 가이드
-
 ## 🛠️ 기술 스택
 
 - **언어**: Python 3.10
 - **딥러닝**: PyTorch 2.0+
 - **데이터 처리**: Pandas, NumPy
-- **데이터베이스**: DuckDB 1.4.3
+- **데이터베이스**: PostGreSQL
 - **시각화**: Matplotlib
 - **환경 관리**: Conda, python-dotenv
 
