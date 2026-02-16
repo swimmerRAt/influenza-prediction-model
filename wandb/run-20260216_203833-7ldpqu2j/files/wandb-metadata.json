@@ -1,0 +1,36 @@
+{
+  "os":  "macOS-26.2-arm64-arm-64bit",
+  "python":  "CPython 3.10.14",
+  "startedAt":  "2026-02-16T11:38:33.235462Z",
+  "program":  "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/patchTST.py",
+  "codePath":  "patchTST.py",
+  "codePathLocal":  "patchTST.py",
+  "git":  {
+    "remote":  "https://github.com/swimmerRAt/influenza-prediction-model.git",
+    "commit":  "7d804794212d494a03d10d4377017c285a9e254f"
+  },
+  "email":  "suuuuwimmer@gmail.com",
+  "root":  "/Users/suyeong/Desktop/temp_workspace/influenza-prediction-model",
+  "host":  "Mac.local",
+  "executable":  "/Users/suyeong/miniconda3/envs/pydev310/bin/python",
+  "cpu_count":  10,
+  "cpu_count_logical":  10,
+  "disk":  {
+    "/":  {
+      "total":  "245107195904",
+      "used":  "206855049216"
+    }
+  },
+  "memory":  {
+    "total":  "17179869184"
+  },
+  "apple":  {
+    "name":  "Apple M4",
+    "ecpuCores":  6,
+    "pcpuCores":  4,
+    "gpuCores":  8,
+    "memoryGb":  16,
+    "ramTotalBytes":  "17179869184"
+  },
+  "writerId":  "618u8f5fgwmdrq8db9e4knhupueez8gz"
+}

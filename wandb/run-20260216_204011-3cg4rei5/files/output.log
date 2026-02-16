@@ -1,0 +1,121 @@
+
+============================================================
+🚀 Walk-Forward Validation 실행 중...
+============================================================
+
+================================================================================
+🔬 Walk-Forward Validation 시작
+   초기 훈련 윈도우: 270
+   테스트 윈도우: 39
+================================================================================
+
+[Fold 1] Train:230 Val:40 Test:39
+           Train period: 2017-W36 ~ 2021-W53
+           Test period:  2022-W41 ~ 2023-W26
+  Epoch   1: Val Loss=0.44023
+  Epoch  30: Val Loss=0.01041
+  Epoch  60: Val Loss=0.01561
+  Early stopping at epoch 63
+           MAE=17.04749, RMSE=17.63260
+
+[Fold 2] Train:246 Val:43 Test:39
+           Train period: 2017-W36 ~ 2022-W16
+           Test period:  2023-W07 ~ 2023-W45
+  Epoch   1: Val Loss=1.76926
+  Epoch  30: Val Loss=0.18769
+  Epoch  60: Val Loss=0.14550
+  Epoch  90: Val Loss=0.14813
+  Epoch 120: Val Loss=0.24710
+  Epoch 150: Val Loss=0.19436
+  Early stopping at epoch 174
+           MAE=12.97970, RMSE=15.09253
+
+[Fold 3] Train:262 Val:46 Test:39
+           Train period: 2017-W36 ~ 2022-W32
+           Test period:  2023-W26 ~ 2024-W11
+  Epoch   1: Val Loss=0.17981
+  Epoch  30: Val Loss=0.48831
+  Early stopping at epoch 51
+           MAE=28.77789, RMSE=33.49103
+
+[Fold 4] Train:278 Val:49 Test:39
+           Train period: 2017-W36 ~ 2022-W48
+           Test period:  2023-W45 ~ 2024-W30
+  Epoch   1: Val Loss=0.12611
+  Epoch  30: Val Loss=0.57663
+  Early stopping at epoch 55
+           MAE=6.59260, RMSE=7.20226
+
+[Fold 5] Train:295 Val:51 Test:39
+           Train period: 2017-W36 ~ 2023-W12
+           Test period:  2024-W11 ~ 2024-W49
+  Epoch   1: Val Loss=3.72408
+  Epoch  30: Val Loss=3.79534
+  Epoch  60: Val Loss=3.75515
+  Early stopping at epoch 71
+           MAE=2.75800, RMSE=4.14021
+
+[Fold 6] Train:311 Val:54 Test:39
+           Train period: 2017-W36 ~ 2023-W28
+           Test period:  2024-W30 ~ 2025-W15
+  Epoch   1: Val Loss=0.67021
+  Epoch  30: Val Loss=0.54075
+  Epoch  60: Val Loss=0.43400
+  Epoch  90: Val Loss=0.53930
+  Epoch 120: Val Loss=0.45155
+  Epoch 150: Val Loss=0.40492
+  Epoch 180: Val Loss=0.38072
+  Early stopping at epoch 181
+           MAE=2.28434, RMSE=3.19012
+
+[Fold 7] Train:327 Val:57 Test:39
+           Train period: 2017-W36 ~ 2023-W44
+           Test period:  2024-W49 ~ 2025-W34
+  Epoch   1: Val Loss=0.33239
+  Epoch  30: Val Loss=0.09863
+  Epoch  60: Val Loss=0.08858
+  Early stopping at epoch 60
+           MAE=2.25766, RMSE=2.72721
+
+[Fold 8] Train:343 Val:60 Test:39
+           Train period: 2017-W36 ~ 2024-W07
+           Test period:  2025-W15 ~ 2025-W46
+  Epoch   1: Val Loss=3.81263
+  Epoch  30: Val Loss=0.97868
+  Epoch  60: Val Loss=0.91226
+  Epoch  90: Val Loss=0.82206
+  Epoch 120: Val Loss=0.84132
+  Early stopping at epoch 149
+           MAE=9.44316, RMSE=13.26870
+
+
+================================================================================
+📊 Walk-Forward Validation 결과 요약
+================================================================================
+ fold train_start train_end test_start test_end       mae      rmse
+    1    2017-W36  2021-W53   2022-W41 2023-W26 17.047485 17.632605
+    2    2017-W36  2022-W16   2023-W07 2023-W45 12.979699 15.092528
+    3    2017-W36  2022-W32   2023-W26 2024-W11 28.777895 33.491028
+    4    2017-W36  2022-W48   2023-W45 2024-W30  6.592597  7.202262
+    5    2017-W36  2023-W12   2024-W11 2024-W49  2.757997  4.140213
+    6    2017-W36  2023-W28   2024-W30 2025-W15  2.284336  3.190118
+    7    2017-W36  2023-W44   2024-W49 2025-W34  2.257659  2.727210
+    8    2017-W36  2024-W07   2025-W15 2025-W46  9.443155 13.268703
+
+평균 성능:
+  MAE  = 10.267603 ± 9.215085
+  RMSE = 12.093083 ± 10.372269
+
+💾 결과 저장: /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/walk_forward_validation_results.csv
+📊 시각화 저장: /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/plot_test_reconstruction.png
+
+📊 Walk-Forward Feature Importance 계산 중...
+💾 Feature Importance 저장: /Users/suyeong/Desktop/temp_workspace/influenza-prediction-model/feature_importance_wfv.csv
+
+📊 [Top 10 Feature Importance]
+  feature  importance
+ peak_gap    0.429463
+      ili    0.400389
+delta_ili    0.142376
+ week_cos    0.013947
+ week_sin    0.013826

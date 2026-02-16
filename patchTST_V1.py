@@ -790,6 +790,7 @@ def save_feature_importance(df: pd.DataFrame, out_csv="feature_importance.csv", 
     plt.tight_layout()
     plt.savefig(out_png, dpi=150)
     print(f"[FI] Saved -> {out_png}")
+    return out_png
 
 
 # =========================
@@ -1112,378 +1113,6 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
 
 
 # =========================
-# Walk-Forward Validation
-# =========================
-# =========================
-# Walk-Forward Validation 시각화 유틸
-# =========================
-def overlap_average_pred(preds: np.ndarray, weights: np.ndarray = None) -> np.ndarray:
-    """
-    Overlap-averaging: 여러 예측 윈도우를 가중치로 평균내기
-    
-    Parameters:
-        preds: (n_samples, pred_len) 형태의 예측값
-        weights: (pred_len,) 형태의 가중치, None이면 [2.0, 1.25, 0.5] 사용
-    
-    Returns:
-        길이 n_samples + pred_len - 1인 평균 예측값
-    """
-    n_samples, pred_len = preds.shape
-    
-    if weights is None:
-        # 기본 가중치: 처음이 클수록, 나중될수록 작음
-        weights = np.linspace(RECON_W_START, RECON_W_END, pred_len)
-    
-    total_len = n_samples + pred_len - 1
-    result = np.zeros(total_len)
-    weight_sum = np.zeros(total_len)
-    
-    for i in range(n_samples):
-        for j in range(pred_len):
-            pos = i + j
-            w = weights[j]
-            result[pos] += preds[i, j] * w
-            weight_sum[pos] += w
-    
-    # 가중치로 정규화
-    result = result / np.maximum(weight_sum, 1e-8)
-    return result
-
-
-def plot_walk_forward_reconstruction(fold_results: list):
-    """
-    Walk-Forward Validation의 각 fold 예측 결과를 2x4 그리드로 시각화
-    
-    Parameters:
-        fold_results: fold별 {'yhat_recon', 'ytrue', 'test_labels', ...} 리스트
-    
-    Returns:
-        저장된 이미지 경로 (Path 객체)
-    """
-    n_folds = len(fold_results)
-    if n_folds == 0:
-        return None
-    
-    # 레이아웃: 2x4 (최대 8개 fold)
-    n_cols = min(4, n_folds)
-    n_rows = (n_folds + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 4*n_rows))
-    axes = axes.flatten() if n_folds > 1 else np.array([axes])
-    
-    for idx, fold in enumerate(fold_results):
-        ax = axes[idx]
-        
-        yhat = fold['yhat_recon']  # Overlap-averaged 예측값
-        ytrue = fold['ytrue']
-        labels = fold['test_labels']
-        
-        # X축: test 기간의 index
-        x = np.arange(len(yhat))
-        
-        # 예측값 (파란색)
-        ax.plot(x, yhat, 'b-', linewidth=2, label='Prediction', alpha=0.8)
-        
-        # 실제값 (빨간색)
-        ax.plot(x, ytrue, 'r-o', linewidth=2, label='Ground Truth', 
-                markersize=3, alpha=0.8)
-        
-        # 스타일
-        ax.set_xlabel('Week', fontsize=10)
-        ax.set_ylabel('ILI (%)', fontsize=10)
-        ax.set_title(
-            f"Fold {fold['fold']}: {fold['test_start']} ~ {fold['test_end']}\n"
-            f"MAE={fold['mae']:.4f}, RMSE={fold['rmse']:.4f}",
-            fontsize=11, fontweight='bold'
-        )
-        ax.legend(loc='best', fontsize=9)
-        ax.grid(True, alpha=0.3)
-        
-        # X축 라벨 간격 조정
-        step = max(1, len(labels) // 6)
-        ax.set_xticks(np.arange(0, len(labels), step))
-        ax.set_xticklabels([labels[i] for i in np.arange(0, len(labels), step)], 
-                           rotation=45, fontsize=8)
-    
-    # 사용하지 않는 서브플롯 숨기기
-    for idx in range(n_folds, len(axes)):
-        axes[idx].axis('off')
-    
-    plt.tight_layout()
-    
-    # 저장
-    wfv_plot_path = BASE_DIR / "plot_test_reconstruction.png"
-    plt.savefig(wfv_plot_path, dpi=150, bbox_inches='tight')
-    print(f"📊 시각화 저장: {wfv_plot_path}")
-    
-    plt.close()
-    
-    return wfv_plot_path
-
-
-def walk_forward_validation(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
-                           train_window: int = None, test_window: int = 39):
-    """
-    Walk-forward validation: expanding window로 순차적으로 학습 및 평가
-    
-    Parameters:
-        X, y, labels, feat_names: 전체 데이터
-        train_window: 최초 훈련 윈도우 크기 (None이면 60% 사용)
-        test_window: 테스트 윈도우 크기 (weeks, 최소 SEQ_LEN+PRED_LEN+10)
-    
-    Returns:
-        결과 DataFrame
-    """
-    n = len(y)
-    if train_window is None:
-        train_window = int(n * 0.6)
-    
-    # test_window 최솟값 보장 (SEQ_LEN + PRED_LEN + 10 = 26 + 3 + 10)
-    min_test_window = SEQ_LEN + PRED_LEN + 10
-    test_window = max(test_window, min_test_window)
-    
-    print(f"\n{'='*80}")
-    print(f"🔬 Walk-Forward Validation 시작")
-    print(f"   초기 훈련 윈도우: {train_window}")
-    print(f"   테스트 윈도우: {test_window}")
-    print(f"{'='*80}\n")
-    
-    results = []
-    fold_results = []  # 시각화용 상세 결과
-    fold_idx = 0
-    
-    # Expanding window: 훈련 데이터는 누적, 테스트는 고정 크기로 슬라이딩
-    pos = train_window
-    while pos + test_window <= n:
-        fold_idx += 1
-        
-        train_idx = np.arange(0, pos)
-        test_idx = np.arange(pos, pos + test_window)
-        
-        # Val_idx: train 마지막 15%
-        val_size = max(int(len(train_idx) * 0.15), SEQ_LEN + PRED_LEN + 10)
-        split_pos = len(train_idx) - val_size
-        
-        train_idx_only = train_idx[:split_pos]
-        val_idx = train_idx[split_pos:]
-        
-        print(f"[Fold {fold_idx}] Train:{len(train_idx_only)} Val:{len(val_idx)} Test:{len(test_idx)}")
-        print(f"           Train period: {labels[train_idx_only[0]]} ~ {labels[train_idx_only[-1]]}")
-        print(f"           Test period:  {labels[test_idx[0]]} ~ {labels[test_idx[-1]]}")
-        
-        # Scaling (train으로만 fit)
-        scaler_y = get_scaler()
-        y_tr_sc = scaler_y.fit_transform(y[train_idx_only].reshape(-1, 1)).ravel()
-        y_va_sc = scaler_y.transform(y[val_idx].reshape(-1, 1)).ravel()
-        y_te_sc = scaler_y.transform(y[test_idx].reshape(-1, 1)).ravel()
-        
-        scaler_x = get_scaler()
-        X_tr_sc = scaler_x.fit_transform(X[train_idx_only])
-        X_va_sc = scaler_x.transform(X[val_idx])
-        X_te_sc = scaler_x.transform(X[test_idx])
-        
-        # Dataset & DataLoader
-        ds_tr = PatchTSTDataset(X_tr_sc, y_tr_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-        ds_va = PatchTSTDataset(X_va_sc, y_va_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-        ds_te = PatchTSTDataset(X_te_sc, y_te_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-        
-        dl_tr = DataLoader(ds_tr, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
-        dl_va = DataLoader(ds_va, batch_size=BATCH_SIZE, shuffle=False)
-        dl_te = DataLoader(ds_te, batch_size=BATCH_SIZE, shuffle=False)
-        
-        # Model
-        set_seed(SEED)
-        model = PatchTSTModel(
-            in_features=X.shape[1], patch_len=PATCH_LEN, d_model=D_MODEL, n_heads=N_HEADS,
-            n_layers=ENC_LAYERS, ff_dim=FF_DIM, dropout=DROPOUT,
-            pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN
-        ).to(DEVICE)
-        
-        # Optimizer & Loss
-        crit = partial(
-            amplitude_aware_mse_with_peak,
-            amp_weight=AMP_WEIGHT,
-            slope_weight=SLOPE_WEIGHT,
-            peak_weight=0.1
-        )
-        opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
-        
-        # Training
-        best_val = float("inf")
-        best_state = None
-        noimp = 0
-        
-        for ep in range(1, EPOCHS + 1):
-            model.train()
-            tr_loss_sum = 0
-            n_tr = 0
-            
-            for g in opt.param_groups:
-                g['lr'] = warmup_lr(ep, LR, WARMUP_EPOCHS)
-            
-            for Xb, yb, _ in dl_tr:
-                Xb = Xb.to(DEVICE)
-                yb = yb.to(DEVICE)
-                opt.zero_grad()
-                pred = model(Xb)
-                loss = crit(pred, yb)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
-                tr_loss_sum += loss.item() * yb.size(0)
-                n_tr += yb.size(0)
-            
-            # Validation
-            model.eval()
-            va_loss_sum = 0
-            n_va = 0
-            with torch.no_grad():
-                for Xb, yb, _ in dl_va:
-                    Xb = Xb.to(DEVICE)
-                    yb = yb.to(DEVICE)
-                    pred = model(Xb)
-                    loss = crit(pred, yb)
-                    va_loss_sum += loss.item() * yb.size(0)
-                    n_va += yb.size(0)
-            
-            va_loss = va_loss_sum / max(1, n_va)
-            scheduler.step()
-            
-            if ep % 30 == 0 or ep == 1:
-                print(f"  Epoch {ep:3d}: Val Loss={va_loss:.5f}")
-            
-            if va_loss < best_val - 1e-6:
-                best_val = va_loss
-                noimp = 0
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            else:
-                noimp += 1
-                if noimp >= PATIENCE:
-                    print(f"  Early stopping at epoch {ep}")
-                    break
-        
-        # Load best & evaluate
-        if best_state is not None:
-            model.load_state_dict({k: v.to(DEVICE) for k, v in best_state.items()})
-        
-        model.eval()
-        preds = []
-        trues = []
-        with torch.no_grad():
-            for Xb, yb, _ in dl_te:
-                Xb = Xb.to(DEVICE)
-                preds.append(model(Xb).detach().cpu().numpy())
-                trues.append(yb.numpy())
-        
-        # 빈 데이터로더 처리
-        if len(preds) == 0:
-            print(f"           ⚠️  테스트 샘플 부족 (required: >={min_test_window}, got: {len(test_idx)})")
-            continue
-        
-        yhat_sc = np.concatenate(preds, axis=0)
-        ytrue_sc = np.concatenate(trues, axis=0)
-        
-        yhat = scaler_y.inverse_transform(yhat_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
-        ytrue = scaler_y.inverse_transform(ytrue_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
-        
-        mae = float(np.mean(np.abs(yhat - ytrue)))
-        rmse = float(np.sqrt(np.mean((yhat - ytrue) ** 2)))
-        
-        print(f"           MAE={mae:.5f}, RMSE={rmse:.5f}\n")
-        
-        # CSV용 요약 결과
-        results.append({
-            "fold": fold_idx,
-            "train_start": labels[int(train_idx_only[0])],
-            "train_end": labels[int(train_idx_only[-1])],
-            "test_start": labels[int(test_idx[0])],
-            "test_end": labels[int(test_idx[-1])],
-            "mae": mae,
-            "rmse": rmse,
-        })
-        
-        # 시각화용 상세 결과 (overlap-averaging으로 재구성)
-        yhat_recon = overlap_average_pred(yhat)
-        ytrue_recon = overlap_average_pred(ytrue)  # ytrue도 overlap-averaging 적용
-        fold_results.append({
-            "fold": fold_idx,
-            "test_labels": [labels[int(i)] for i in test_idx],
-            "yhat_raw": yhat,
-            "yhat_recon": yhat_recon,
-            "ytrue": ytrue_recon,
-            "test_start": labels[int(test_idx[0])],
-            "test_end": labels[int(test_idx[-1])],
-            "mae": mae,
-            "rmse": rmse,
-        })
-        
-        # 다음 윈도우로 이동 (약 50% 오버랩)
-        pos += test_window // 2
-    
-    # 결과 집계
-    print(f"\n{'='*80}")
-    print("📊 Walk-Forward Validation 결과 요약")
-    print(f"{'='*80}")
-    
-    df_results = pd.DataFrame(results)
-    print(df_results.to_string(index=False))
-    
-    print(f"\n평균 성능:")
-    print(f"  MAE  = {df_results['mae'].mean():.6f} ± {df_results['mae'].std():.6f}")
-    print(f"  RMSE = {df_results['rmse'].mean():.6f} ± {df_results['rmse'].std():.6f}")
-    
-    # CSV 저장
-    wfv_result_path = BASE_DIR / "walk_forward_validation_results.csv"
-    df_results.to_csv(wfv_result_path, index=False, encoding="utf-8-sig")
-    print(f"\n💾 결과 저장: {wfv_result_path}")
-    
-    # Walk-Forward 결과 시각화
-    wfv_plot_path = None
-    if len(fold_results) > 0:
-        wfv_plot_path = plot_walk_forward_reconstruction(fold_results)
-    
-    # Walk-Forward Feature Importance: 모든 fold 결과 기반으로 계산
-    fi_df = None
-    if len(fold_results) > 0:
-        print("\n📊 Walk-Forward Feature Importance 계산 중...")
-        
-        # 모든 fold의 실제값과 예측값 수집
-        all_preds = []
-        all_trues = []
-        for fold in fold_results:
-            all_preds.append(fold['yhat_raw'].flatten())
-            all_trues.append(fold['ytrue'].flatten())
-        
-        all_preds = np.concatenate(all_preds)
-        all_trues = np.concatenate(all_trues)
-        
-        # Feature importance: 단순 평균 기반 통계
-        fi_scores = np.zeros(X.shape[1])
-        for feat_idx in range(X.shape[1]):
-            # 해당 feature의 표준편차를 importance로 사용
-            fi_scores[feat_idx] = np.std(X[:, feat_idx])
-        
-        # 정규화
-        fi_scores = fi_scores / (np.sum(fi_scores) + 1e-8)
-        
-        # DataFrame 생성
-        fi_df = pd.DataFrame({
-            "feature": feat_names,
-            "importance": fi_scores,
-        }).sort_values("importance", ascending=False).reset_index(drop=True)
-        
-        # CSV 저장
-        fi_path = BASE_DIR / "feature_importance_wfv.csv"
-        fi_df.to_csv(fi_path, index=False, encoding="utf-8-sig")
-        print(f"💾 Feature Importance 저장: {fi_path}")
-        print("\n📊 [Top 10 Feature Importance]")
-        print(fi_df.head(10).to_string(index=False))
-    
-    return df_results, wfv_plot_path, fi_df
-
-
-# =========================
 # 실행부 (결과 출력 + Feature Importance)
 # =========================
 if __name__ == "__main__":
@@ -1512,6 +1141,7 @@ if __name__ == "__main__":
     wandb.init(
         project="influenza-patchTST",
         name=run_name,
+        mode="disabled",
         config={
             # ===== data =====
             "seq_len": SEQ_LEN,
@@ -1551,64 +1181,38 @@ if __name__ == "__main__":
         }
     )
     
-    # ========================================
-    # 검증 방식 선택
-    # ========================================
-    USE_WALK_FORWARD = True  # True면 Walk-Forward CV, False면 표준 단일 분할
-    
-    if USE_WALK_FORWARD:
-        print("\n" + "="*60)
-        print("🚀 Walk-Forward Validation 실행 중...")
-        print("="*60)
-        wfv_results, wfv_plot_path, fi_df_wfv = walk_forward_validation(
-            X, y, labels, feat_names,
-            train_window=None,  # 60% 자동 설정
-            test_window=39      # 39주 테스트 윈도우 (SEQ_LEN=26 + PRED_LEN=3 + 10 여유)
-        )
-        
-        # WandB 로깅
-        wandb.log({"walk_forward_results": wandb.Table(dataframe=wfv_results)})
-        if wfv_plot_path and wfv_plot_path.exists():
-            wandb.log({"plot/walk_forward_reconstruction": wandb.Image(str(wfv_plot_path))})
-        
-        # Feature Importance 로깅
-        if fi_df_wfv is not None:
-            wandb.log({"feature_importance_wfv": wandb.Table(dataframe=fi_df_wfv)})
-            fi_plot_path = BASE_DIR / "feature_importance_wfv.png"
-            if fi_plot_path.exists():
-                wandb.log({"plot/feature_importance_wfv": wandb.Image(str(fi_plot_path))})
-        
-        
-        
+    print("\n" + "="*60)
+    print("🚀 표준 단일 분할 모델 학습 중...")
+    print("="*60)
+
+    model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
+        X, y, labels, feat_names,
+        compute_fi=True,
+        save_fi=True
+    )
+
+    print("\n" + "="*60)
+    print("=== [최종 결과 요약] ===")
+    print("="*60)
+    print(f"✅ Feature 개수: {len(feat_names)}")
+    if fi_df is not None:
+        print("\n📊 [Top 10 Feature Importance]")
+        print(fi_df.head(10).to_string(index=False))
+        print(f"\n💾 저장된 파일:")
+        print(f"   - feature_importance.csv")
+        print(f"   - feature_importance.png")
     else:
-        print("\n" + "="*60)
-        print("🚀 표준 단일 분할 모델 학습 중...")
-        print("="*60)
-        
-        model, X_va_sc, y_va_sc, X_te_sc, y_te_sc, scaler_y, feat_names, fi_df = train_and_eval(
-            X, y, labels, feat_names,
-            compute_fi=True,
-            save_fi=True
-        )
+        print("⚠️  Feature Importance 계산이 수행되지 않았습니다.")
 
-        print("\n" + "="*60)
-        print("=== [최종 결과 요약] ===")
-        print("="*60)
-        print(f"✅ Feature 개수: {len(feat_names)}")
-        if fi_df is not None:
-            print("\n📊 [Top 10 Feature Importance]")
-            print(fi_df.head(10).to_string(index=False))
-            print(f"\n💾 저장된 파일:")
-            print(f"   - feature_importance.csv")
-            print(f"   - feature_importance.png")
-        else:
-            print("⚠️  Feature Importance 계산이 수행되지 않았습니다.")
+    wandb.log({
+        "plot/last_window": wandb.Image(PLOT_LAST_WINDOW),
+        "plot/test_reconstruction": wandb.Image(PLOT_TEST_RECON),
+        "plot/mae_curves": wandb.Image(PLOT_MA_CURVES),
+    })
 
-        wandb.log({
-            "plot/last_window": wandb.Image(PLOT_LAST_WINDOW),
-            "plot/test_reconstruction": wandb.Image(PLOT_TEST_RECON),
-            "plot/mae_curves": wandb.Image(PLOT_MA_CURVES),
-        })
+    fi_plot_path = BASE_DIR / "feature_importance.png"
+    if fi_plot_path.exists():
+        wandb.log({"plot/feature_importance": wandb.Image(str(fi_plot_path))})
 
     wandb.finish()
     print("\n✅ 모든 작업 완료!")
