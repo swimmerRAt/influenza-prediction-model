@@ -334,6 +334,14 @@ def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndar
             df["year"] = df["date"].dt.isocalendar().year
         if "week" not in df.columns:
             df["week"] = df["date"].dt.isocalendar().week
+    
+    # 2024년 12월 31일까지의 데이터만 사용
+    if "date" in df.columns:
+        df = df[df["date"] <= "2024-12-31"].copy()
+        print(f"   📅 데이터 필터링: 2024-12-31 이전만 사용 ({len(df)}건)")
+    elif "year" in df.columns:
+        df = df[df["year"] <= 2024].copy()
+        print(f"   📅 데이터 필터링: 2024년 이전만 사용 ({len(df)}건)")
 
     df, _ = preprocess_data(df)
     
