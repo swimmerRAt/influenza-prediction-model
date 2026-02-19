@@ -76,12 +76,23 @@ D_MODEL     = 64       # 8의 배수 (강화된 멀티스케일 분기 8개 합�
 N_HEADS     = 4        # 더 많은 attention head로 다양한 패턴 포착
 ENC_LAYERS  = 3        # 인코더 깊이 증가
 FF_DIM      = 64       # 피드포워드 차원 증가
-DROPOUT     = 0.2        # 약간 강화
+DROPOUT     = 0.3        # 약간 강화
 HEAD_HIDDEN = [64, 32]  # MLP 헤드 크기 증가
 
 # Amplitude-aware loss 가중치 (수영)
 AMP_WEIGHT   = 0.02
 SLOPE_WEIGHT = 0.10  # 더 낮춘 값
+PEAK_AREA_WEIGHT = 0.4  # peak_area_penalty 가중치 (peak_penalty 대체) - 증가하여 효과 강화
+PEAK_AREA_THRESHOLD = 0.85  # ILI 값이 이 percentile 이상이면 peak area로 간주 (더 넓게)
+OVERSAMPLE_HIGH_ILI = True  # high-ILI 윈도우 oversampling 활성화
+HIGH_ILI_THRESHOLD = 0.85  # 이 percentile 이상의 최대 ILI를 가진 윈도우를 high-ILI로 간주 (더 넓게)
+DELTA_LOSS_WEIGHT = 0.2  # Δloss 가중치: MSE(Δpred, Δtrue)
+OVERESTIMATE_WEIGHT = 0.3  # 낮은 피크 영역에서 과대예측(overestimate) 페널티 가중치
+PEAK_RESIDUAL_WEIGHT = 0.5  # 피크 패치 residual connection 가중치 (방법 3) - 효과적이었음
+USE_PEAK_AWARE_ATTENTION = False  # Peak-Aware Attention 사용 여부 (효과 없어서 비활성화)
+PEAK_BONUS_WEIGHT = 0.5  # Peak-Aware Attention에서 피크 보너스 가중치 (현재 미사용)
+USE_PEAK_PRESERVING_POOL = True  # Peak-Preserving Pooling 사용 여부 (Peak Features+Attention 결합)
+PEAK_POOL_MAX_WEIGHT = 0.3  # Peak-Preserving Pooling에서 피크 패치 가중치 (0.2~0.4 권장, Max pooling 대신 피크 패치 직접 사용)
 
 # tanh 활성화 스케일 (alpha: 입력 스케일, gain: 출력 스케일)
 # 디폴트값 : alpha 1.5, gain 1.2
@@ -91,16 +102,15 @@ TANH_LEARNABLE = True
 
 LR              = 3e-4    # 더 강한 모델이므로 학습률 감소
 WEIGHT_DECAY    = 5e-3
-PATIENCE        = 50      # 조기 종료 기준 단축 (더 강한 모델은 빠르게 수렴)
+PATIENCE        = 15      # Val 개선 없으면 조기 종료 (과적합 억제)
 WARMUP_EPOCHS   = 30      # Warmup 에포크 단축
 
-SCALER_TYPE     = "standard"   # 노이즈/꼬리값 대응에 유리 (원하면 "standard"로 변경)
+SCALER_TYPE     = "standard"   # StandardScaler 사용 (RobustScaler는 피크를 너무 완만하게 만듦)
 
 # 외생 특징 사용 모드: "auto"|"none"|"vax"|"resp"|"both"
 USE_EXOG        = "all"
 
 OUT_CSV          = str(BASE_DIR / "ili_predictions.csv")
-PLOT_LAST_WINDOW = str(BASE_DIR / "plot_last_window.png")
 PLOT_TEST_RECON  = str(BASE_DIR / "plot_test_reconstruction.png")
 PLOT_MA_CURVES   = str(BASE_DIR / "plot_ma_curves.png")
 
@@ -336,17 +346,17 @@ def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndar
             df["week"] = df["date"].dt.isocalendar().week
     
     # 주석 처리된 데이터 필터링 코드
-    # """
-    # # 2024년 12월 31일까지의 데이터만 사용
-    # if "date" in df.columns:
-    #     df = df[df["date"] <= "2024-12-31"].copy()
-    #     print(f"   📅 데이터 필터링: 2024-12-31 이전만 사용 ({len(df)}건)")
-    # elif "year" in df.columns:
-    #     df = df[df["year"] <= 2024].copy()
-    #     print(f"   📅 데이터 필터링: 2024년 이전만 사용 ({len(df)}건)")
-    # 
-    # df, _ = preprocess_data(df)
-    # """
+
+    # 2024년 12월 31일까지의 데이터만 사용
+    if "date" in df.columns:
+        df = df[df["date"] <= "2024-12-31"].copy()
+        print(f"   📅 데이터 필터링: 2024-12-31 이전만 사용 ({len(df)}건)")
+    elif "year" in df.columns:
+        df = df[df["year"] <= 2024].copy()
+        print(f"   📅 데이터 필터링: 2024년 이전만 사용 ({len(df)}건)")
+    
+    df, _ = preprocess_data(df)
+     
     
     # week_sin, week_cos 생성 (date로부터)
     if "week_sin" not in df.columns and "week" in df.columns:
@@ -437,14 +447,35 @@ def load_and_prepare(df_input: pd.DataFrame = None) -> Tuple[np.ndarray, np.ndar
 # =========================
 class PatchTSTDataset(Dataset):
     """Multivariate X (N,F) + y (N,) -> (patchified) windows."""
-    def __init__(self, X: np.ndarray, y: np.ndarray, seq_len:int, pred_len:int, patch_len:int, stride:int):
+    def __init__(self, X: np.ndarray, y: np.ndarray, seq_len:int, pred_len:int, patch_len:int, stride:int,
+                 oversample_high_ili: bool = False, high_ili_threshold: float = 0.7):
         assert len(X) == len(y)
         self.X = X.astype(np.float32)
         self.y = y.astype(np.float32)
         self.seq_len, self.pred_len = seq_len, pred_len
         self.patch_len, self.stride = patch_len, stride
         max_start = len(self.y) - (seq_len + pred_len)
-        self.indices = list(range(max(0, max_start + 1)))
+        base_indices = list(range(max(0, max_start + 1)))
+        
+        # high-ILI 윈도우 oversampling
+        if oversample_high_ili:
+            # 각 윈도우의 타겟 y 값의 최대값 계산
+            window_max_ili = np.array([
+                self.y[i+seq_len:i+seq_len+pred_len].max() 
+                for i in base_indices
+            ])
+            threshold = np.quantile(window_max_ili, high_ili_threshold)
+            
+            # high-ILI 윈도우 인덱스 찾기
+            high_ili_indices = [i for i, max_val in zip(base_indices, window_max_ili) if max_val >= threshold]
+            low_ili_indices = [i for i, max_val in zip(base_indices, window_max_ili) if max_val < threshold]
+            
+            # high-ILI 윈도우를 2배 더 자주 샘플링하도록 indices 확장
+            self.indices = base_indices + high_ili_indices * 1  # 원본 + 1배 추가 = 총 2배
+            print(f"   [Oversampling] 전체 {len(base_indices)}개 윈도우 중 "
+                  f"high-ILI({len(high_ili_indices)}개, threshold={threshold:.3f})를 2배 oversampling → 총 {len(self.indices)}개")
+        else:
+            self.indices = base_indices
 
     def __len__(self): return len(self.indices)
 
@@ -605,9 +636,111 @@ class AttnPool(nn.Module):
         pooled = attn @ z                                  # (B,1,D)
         return pooled.squeeze(1)                           # (B,D)
 
+class PeakPreservingPool(nn.Module):
+    """
+    피크 정보를 보존하는 Pooling (개선 버전)
+    - Attention pooling (전체 확산 추세 포착)
+    - Top-k 패치 가중 평균 (피크 패치 직접 강조)
+    - Max pooling 대신 피크 패치 특징을 직접 사용하여 날카로운 피크 보존
+    """
+    def __init__(self, d_model:int, peak_weight:float=0.3, delta_ili_idx:int=0):
+        super().__init__()
+        self.q = nn.Parameter(torch.randn(1, 1, d_model))
+        self.proj = nn.Linear(d_model, d_model, bias=False)
+        self.peak_weight = peak_weight  # 피크 패치 가중치 (0.2~0.4 권장)
+        self.delta_ili_idx = delta_ili_idx
+    
+    def forward(self, z, x_patches=None):  # z: (B, P, D), x_patches: (B, P, L, F) optional
+        B, P, D = z.shape
+        
+        # 1. Attention pooling (전체 확산 추세 포착)
+        q = self.q.expand(B, -1, -1)  # (B,1,D)
+        k = self.proj(z)  # (B,P,D)
+        attn = torch.softmax((q @ k.transpose(1,2)) / (D**0.5), dim=-1)  # (B,1,P)
+        attn_pooled = (attn @ z).squeeze(1)  # (B,D)
+        
+        # 2. 피크 패치 특징 추출 (입력 데이터 기반)
+        if x_patches is not None:
+            # 입력 패치의 delta_ili 값으로 피크 패치 찾기
+            delta_ili_values = x_patches[:, :, :, self.delta_ili_idx]  # (B, P, L)
+            patch_delta_ili_mean = delta_ili_values.mean(dim=2)  # (B, P)
+            
+            # 상위 2개 패치 선택
+            top_k = min(2, P)
+            _, top_indices = torch.topk(patch_delta_ili_mean, k=top_k, dim=1)  # (B, top_k)
+            
+            # 상위 패치들의 가중 평균
+            peak_features_list = []
+            for i in range(B):
+                batch_top_indices = top_indices[i]  # (top_k,)
+                batch_top_features = z[i, batch_top_indices]  # (top_k, D)
+                # 첫 번째 패치에 더 큰 가중치
+                weights = torch.softmax(torch.arange(top_k, device=z.device, dtype=torch.float32).flip(0), dim=0)
+                weighted_peak = (batch_top_features * weights.view(-1, 1)).sum(dim=0)  # (D,)
+                peak_features_list.append(weighted_peak)
+            peak_features = torch.stack(peak_features_list, dim=0)  # (B, D)
+        else:
+            # Fallback: 특징 벡터 norm 기반
+            patch_norms = torch.norm(z, dim=-1)  # (B, P)
+            peak_idx = patch_norms.argmax(dim=1)  # (B,)
+            peak_features = z[torch.arange(B, device=z.device), peak_idx]  # (B, D)
+        
+        # 3. 가중 결합: Attention(추세) + Peak Features(날카로운 피크)
+        combined = (1.0 - self.peak_weight) * attn_pooled + self.peak_weight * peak_features
+        
+        return combined  # (B,D)
+
+class PeakAwareAttnPool(nn.Module):
+    """
+    피크 패턴에 집중하는 Attention Pooling
+    - 기본 attention + 피크 감지 보너스
+    - 높은 값 패치에 자동으로 더 높은 attention 가중치 부여
+    """
+    def __init__(self, d_model:int, peak_bonus_weight:float=0.5):
+        super().__init__()
+        self.q = nn.Parameter(torch.randn(1, 1, d_model))
+        self.proj = nn.Linear(d_model, d_model, bias=False)
+        # 피크 감지용 작은 네트워크
+        self.peak_detector = nn.Sequential(
+            nn.Linear(d_model, d_model // 4),
+            nn.GELU(),
+            nn.Linear(d_model // 4, 1),
+            nn.Sigmoid()  # 피크 확률 [0, 1]
+        )
+        self.peak_bonus_weight = peak_bonus_weight
+    
+    def forward(self, z, delta_ili_values=None):  # z: (B, P, D), delta_ili_values: (B, P, L) optional
+        B, P, D = z.shape
+        
+        # 1. 기본 attention
+        q = self.q.expand(B, -1, -1)  # (B,1,D)
+        k = self.proj(z)  # (B,P,D)
+        attn_base = torch.softmax((q @ k.transpose(1,2)) / (D**0.5), dim=-1)  # (B,1,P)
+        
+        # 2. 피크 감지 보너스
+        if delta_ili_values is not None:
+            # 입력 데이터 기반 피크 감지 (더 정확)
+            patch_delta_ili_mean = delta_ili_values.mean(dim=2)  # (B, P)
+            # 정규화하여 [0, 1] 범위로
+            patch_delta_ili_norm = (patch_delta_ili_mean - patch_delta_ili_mean.min(dim=1, keepdim=True)[0]) / \
+                                   (patch_delta_ili_mean.max(dim=1, keepdim=True)[0] - patch_delta_ili_mean.min(dim=1, keepdim=True)[0] + 1e-8)
+            peak_bonus = patch_delta_ili_norm.unsqueeze(1)  # (B, 1, P)
+        else:
+            # 특징 벡터 기반 피크 감지 (fallback)
+            peak_scores = self.peak_detector(z).squeeze(-1)  # (B, P)
+            peak_bonus = peak_scores.unsqueeze(1)  # (B, 1, P)
+        
+        # 3. 결합: 피크가 높을수록 더 큰 attention
+        attn = torch.softmax(attn_base + self.peak_bonus_weight * peak_bonus, dim=-1)
+        pooled = attn @ z  # (B,1,D)
+        return pooled.squeeze(1)  # (B,D)
+
 class PatchTSTModel(nn.Module):
     def __init__(self, in_features:int, patch_len:int, d_model:int, n_heads:int,
-                 n_layers:int, ff_dim:int, dropout:float, pred_len:int, head_hidden:List[int]):
+                 n_layers:int, ff_dim:int, dropout:float, pred_len:int, head_hidden:List[int],
+                 peak_residual_weight:float=0.5, delta_ili_idx:int=0,
+                 use_peak_aware_attention:bool=False, peak_bonus_weight:float=0.5,
+                 use_peak_preserving_pool:bool=False, peak_pool_max_weight:float=0.3):
         super().__init__()
         # ① 멀티스케일 CNN 패치 임베딩
         self.embed = MultiScaleCNNPatchEmbed(in_features, patch_len, d_model, dropout=dropout*0.5)
@@ -623,9 +756,15 @@ class PatchTSTModel(nn.Module):
             dropout=dropout, batch_first=True, activation="gelu"
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
-        self.pool = AttnPool(d_model)
+        # Pooling 방식 선택
+        if use_peak_aware_attention:
+            self.pool = PeakAwareAttnPool(d_model, peak_bonus_weight=peak_bonus_weight)
+        elif use_peak_preserving_pool:
+            self.pool = PeakPreservingPool(d_model, peak_weight=peak_pool_max_weight, delta_ili_idx=delta_ili_idx)
+        else:
+            self.pool = AttnPool(d_model)
 
-        # ④ 예측 헤드
+        # ④ 예측 헤드 (trend predictor: 기존 linear head 유지)
         mlp, in_dim = [], d_model
         for h in head_hidden[:2]:
             mlp += [nn.Linear(in_dim, h), nn.GELU(), nn.Dropout(dropout)]
@@ -633,16 +772,77 @@ class PatchTSTModel(nn.Module):
         mlp.append(nn.Linear(in_dim, pred_len))
         self.head = nn.Sequential(*mlp)
         self.out_scale = nn.Parameter(torch.tensor(1.5)) # 출력 스케일 파라미터 (수영)
+        
+        # ⑤ Peak residual branch (보조용 비선형 MLP, trajectory는 흔들지 않도록 약하게)
+        peak_hidden = max(16, d_model // 2)  # 작은 용량
+        self.peak_residual_branch = nn.Sequential(
+            nn.Linear(d_model, peak_hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(peak_hidden, pred_len),
+        )
+        self.peak_residual_alpha = nn.Parameter(torch.tensor(0.1))  # learnable, 초기 0.1로 보조만
+        
+        # 🔥 피크 패치 residual connection 설정
+        self.peak_residual_weight = peak_residual_weight
+        self.delta_ili_idx = delta_ili_idx  # delta_ili feature 인덱스 (보통 0)
+        self.use_peak_aware_attention = use_peak_aware_attention
+        self.use_peak_preserving_pool = use_peak_preserving_pool
 
     def forward(self, x):
         # x: (B, P, L, F)
         z = self.embed(x)      # (B,P,D)
         z = self.mixer(z)      # (B,P,D)
         z = self.posenc(z)
-        z = self.encoder(z)
-        z = self.pool(z)       # (B,D)
-        # return self.head(z)    # (B,H)
-        return self.head(z) * self.out_scale    # (B,H) (수영)
+        z = self.encoder(z)    # (B,P,D)
+        
+        # 🔥 피크 패치 찾기: 입력 데이터의 delta_ili 값 사용
+        # 각 패치의 delta_ili 평균값이 가장 큰 패치를 피크 패치로 선택
+        # x: (B, P, L, F), delta_ili는 첫 번째 feature (인덱스 0)
+        delta_ili_values = x[:, :, :, self.delta_ili_idx]  # (B, P, L) - 각 패치의 delta_ili 값
+        patch_delta_ili_mean = delta_ili_values.mean(dim=2)  # (B, P) - 각 패치의 평균 delta_ili
+        
+        # 가장 높은 delta_ili 평균을 가진 상위 2개 패치 선택 (더 안정적)
+        top_k = min(2, z.size(1))  # 최소 2개, 패치 수보다 많지 않게
+        _, top_indices = torch.topk(patch_delta_ili_mean, k=top_k, dim=1)  # (B, top_k)
+        
+        # 상위 패치들의 특징을 가중 평균 (가장 높은 패치에 더 큰 가중치)
+        B, P, D = z.shape
+        peak_features_list = []
+        for i in range(B):
+            # 각 배치의 상위 패치들
+            batch_top_indices = top_indices[i]  # (top_k,)
+            batch_top_features = z[i, batch_top_indices]  # (top_k, D)
+            
+            # 가중치: 첫 번째 패치에 더 큰 가중치
+            weights = torch.softmax(torch.arange(top_k, device=z.device, dtype=torch.float32).flip(0), dim=0)
+            weighted_peak = (batch_top_features * weights.view(-1, 1)).sum(dim=0)  # (D,)
+            peak_features_list.append(weighted_peak)
+        
+        peak_features = torch.stack(peak_features_list, dim=0)  # (B, D)
+        
+        # Pooling (Peak-Preserving인 경우 입력 패치 정보 전달)
+        if self.use_peak_aware_attention:
+            delta_ili_values = x[:, :, :, self.delta_ili_idx]  # (B, P, L)
+            z_pooled = self.pool(z, delta_ili_values=delta_ili_values)  # (B, D)
+            # Peak-Aware Attention 사용 시에도 residual connection 적용
+            z_combined = z_pooled + self.peak_residual_weight * peak_features  # (B, D)
+        elif self.use_peak_preserving_pool:
+            # Peak-Preserving Pooling은 이미 피크 패치 정보를 포함하므로
+            # residual connection은 선택적으로 적용 (중복 방지)
+            z_pooled = self.pool(z, x_patches=x)  # (B, D)
+            # Peak-Preserving Pooling이 이미 피크 정보를 포함하므로 residual은 약하게
+            z_combined = z_pooled + (self.peak_residual_weight * 0.3) * peak_features  # (B, D)
+        else:
+            z_pooled = self.pool(z)  # (B, D)
+            # 🔥 피크 정보를 residual connection으로 결합
+            # 피크 패치 정보를 강조하여 높은 값 예측 개선
+            z_combined = z_pooled + self.peak_residual_weight * peak_features  # (B, D)
+        
+        # Trend(기존 linear head) + alpha * peak_residual(branch)
+        trend = self.head(z_combined) * self.out_scale  # (B, H) - 장기 확산 추세
+        peak_res = self.peak_residual_branch(z_combined)  # (B, H) - 피크 보정용 residual
+        return trend + self.peak_residual_alpha * peak_res  # (B, H)
 # =========================
 # helpers
 # =========================
@@ -676,10 +876,26 @@ def batch_corrcoef(pred_b: torch.Tensor, y_b: torch.Tensor, scaler_y) -> float:
 # amplitude-aware MSE 함수 만들기 (수영)
 # =========================
 # 값과 변환율이 클 수록 예측을 틀리면 손실을 더 크게 주도록 하는 MSE 함수임
-def amplitude_aware_mse_with_peak(pred, true,
-                                  amp_weight,
-                                  slope_weight,
-                                  peak_weight=0.1):
+def amplitude_aware_mse_with_peak_area(pred, true,
+                                       amp_weight,
+                                       slope_weight,
+                                       peak_area_weight=0.5,
+                                       peak_area_threshold=0.95,
+                                       delta_loss_weight=0.2,
+                                       overestimate_weight=0.3,
+                                       global_high_threshold=None,
+                                       global_low_threshold=None):
+    """
+    피크 높이에 따라 차별화된 페널티:
+    - 높은 피크 영역 (high threshold 이상): 과소예측(underestimate)에만 페널티
+    - 낮은 피크 영역 (low threshold 미만): 과대예측(overestimate)에도 페널티 추가
+    - 중간 피크 영역: 양방향 페널티 (균형)
+    - delta_loss: 변화량(Δpred, Δtrue)에 대한 MSE 추가
+    
+    Args:
+        global_high_threshold: 전체 학습 데이터 기준 고정된 높은 피크 threshold (None이면 배치별 계산)
+        global_low_threshold: 전체 학습 데이터 기준 고정된 낮은 피크 threshold (None이면 배치별 계산)
+    """
     # 기존 amplitude-aware MSE
     amp_w = 1.0 + amp_weight * true.abs()
 
@@ -693,12 +909,49 @@ def amplitude_aware_mse_with_peak(pred, true,
     weight = amp_w * slope_w
     mse = (weight * (pred - true) ** 2).mean()
 
-    # 🔥 peak underestimation penalty
-    pred_max = pred.max(dim=1).values
-    true_max = true.max(dim=1).values
-    peak_penalty = torch.relu(true_max - pred_max).mean()
+    # 🔥 피크 높이에 따른 차별화된 페널티
+    # 전체 학습 데이터 기준 threshold가 제공되면 사용, 아니면 배치별 계산
+    if global_high_threshold is not None and global_low_threshold is not None:
+        high_threshold = global_high_threshold
+        low_threshold = global_low_threshold
+    else:
+        # 배치별 threshold 계산 (하위 호환성)
+        true_flat = true.flatten()
+        high_threshold = torch.quantile(true_flat, peak_area_threshold).item()
+        low_threshold = torch.quantile(true_flat, 0.5).item()
+    
+    # 높은 피크 영역: 과소예측에만 페널티 (기존 방식)
+    high_peak_mask = (true >= high_threshold).float()
+    underestimate_mask = (pred < true).float() * high_peak_mask
+    high_peak_error = (true - pred) ** 2 * underestimate_mask
+    high_peak_penalty = high_peak_error.sum() / (underestimate_mask.sum() + 1e-8)
+    
+    # 낮은 피크 영역: 과대예측에도 페널티 추가
+    low_peak_mask = (true < low_threshold).float()
+    overestimate_mask = (pred > true).float() * low_peak_mask
+    low_peak_error = (pred - true) ** 2 * overestimate_mask
+    low_peak_penalty = low_peak_error.sum() / (overestimate_mask.sum() + 1e-8)
+    
+    # 중간 피크 영역: 양방향 페널티 (균형)
+    mid_peak_mask = ((true >= low_threshold) & (true < high_threshold)).float()
+    mid_underestimate = (pred < true).float() * mid_peak_mask
+    mid_overestimate = (pred > true).float() * mid_peak_mask
+    mid_peak_error = (pred - true) ** 2 * mid_peak_mask
+    mid_peak_penalty = mid_peak_error.sum() / (mid_peak_mask.sum() + 1e-8)
+    
+    # 전체 peak_area_penalty: 높은 피크 페널티 + 낮은 피크 페널티 + 중간 피크 페널티
+    peak_area_penalty = high_peak_penalty + overestimate_weight * low_peak_penalty + 0.5 * mid_peak_penalty
 
-    return mse + peak_weight * peak_penalty
+    # 🔥 delta_loss: 변화량(Δpred, Δtrue)에 대한 MSE
+    delta_loss = 0.0
+    if true.shape[1] > 1:
+        # Δpred = pred[:, 1:] - pred[:, :-1]
+        # Δtrue = true[:, 1:] - true[:, :-1]
+        delta_pred = pred[:, 1:] - pred[:, :-1]
+        delta_true = true[:, 1:] - true[:, :-1]
+        delta_loss = ((delta_pred - delta_true) ** 2).mean()
+
+    return mse + peak_area_weight * peak_area_penalty + delta_loss_weight * delta_loss
 
 # =========================
 # Feature Importance utils
@@ -832,13 +1085,24 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     X_va_sc = scaler_x.transform(X_va)
     X_te_sc = scaler_x.transform(X_te)
 
+    # 🔥 전체 학습 데이터 분포를 사용해서 고정된 threshold 계산
+    # (배치마다 threshold가 달라지는 문제 해결)
+    y_tr_tensor = torch.from_numpy(y_tr_sc).float()
+    global_high_threshold = torch.quantile(y_tr_tensor, PEAK_AREA_THRESHOLD).item()
+    global_low_threshold = torch.quantile(y_tr_tensor, 0.5).item()
+    print(f"[Thresholds] 전체 학습 데이터 기준 - High: {global_high_threshold:.4f} (percentile={PEAK_AREA_THRESHOLD}), Low: {global_low_threshold:.4f} (percentile=0.5)")
+
     F = X.shape[1]
     print(f"[Shapes] X_tr:{X_tr.shape}, X_va:{X_va.shape}, X_te:{X_te.shape} | F={F}")
     print(f"[Info] Model input feature order -> {feat_names}")
 
-    ds_tr = PatchTSTDataset(X_tr_sc, y_tr_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-    ds_va = PatchTSTDataset(X_va_sc, y_va_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
-    ds_te = PatchTSTDataset(X_te_sc, y_te_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE)
+    ds_tr = PatchTSTDataset(X_tr_sc, y_tr_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE,
+                            oversample_high_ili=OVERSAMPLE_HIGH_ILI, 
+                            high_ili_threshold=HIGH_ILI_THRESHOLD)
+    ds_va = PatchTSTDataset(X_va_sc, y_va_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE,
+                            oversample_high_ili=False)  # validation/test는 oversampling 안 함
+    ds_te = PatchTSTDataset(X_te_sc, y_te_sc, SEQ_LEN, PRED_LEN, PATCH_LEN, STRIDE,
+                            oversample_high_ili=False)
 
     dl_tr = DataLoader(ds_tr, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
     dl_va = DataLoader(ds_va, batch_size=BATCH_SIZE, shuffle=False)
@@ -847,16 +1111,27 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     model = PatchTSTModel(
         in_features=F, patch_len=PATCH_LEN, d_model=D_MODEL, n_heads=N_HEADS,
         n_layers=ENC_LAYERS, ff_dim=FF_DIM, dropout=DROPOUT,
-        pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN
+        pred_len=PRED_LEN, head_hidden=HEAD_HIDDEN,
+        peak_residual_weight=PEAK_RESIDUAL_WEIGHT,  # 피크 패치 residual connection 가중치
+        delta_ili_idx=0,  # delta_ili는 첫 번째 feature (feat_names[0])
+        use_peak_aware_attention=USE_PEAK_AWARE_ATTENTION,  # Peak-Aware Attention 사용 여부
+        peak_bonus_weight=PEAK_BONUS_WEIGHT,  # Peak-Aware Attention 피크 보너스 가중치
+        use_peak_preserving_pool=USE_PEAK_PRESERVING_POOL,  # Peak-Preserving Pooling 사용 여부
+        peak_pool_max_weight=PEAK_POOL_MAX_WEIGHT  # Peak-Preserving Pooling Max 가중치
     ).to(DEVICE)
 
     # crit = nn.HuberLoss(delta=1.0)
     # crit = amplitude_aware_mse # (수영)
     crit = partial(
-        amplitude_aware_mse_with_peak,
-        amp_weight=AMP_WEIGHT,        # config 값 사용
-        slope_weight=SLOPE_WEIGHT,    # config 값 사용
-        peak_weight=0.1
+        amplitude_aware_mse_with_peak_area,
+        amp_weight=AMP_WEIGHT,              # config 값 사용
+        slope_weight=SLOPE_WEIGHT,          # config 값 사용
+        peak_area_weight=PEAK_AREA_WEIGHT,  # peak_area_penalty 가중치
+        peak_area_threshold=PEAK_AREA_THRESHOLD,  # peak area 판단 threshold (global_threshold가 None일 때 사용)
+        delta_loss_weight=DELTA_LOSS_WEIGHT,  # Δloss 가중치
+        overestimate_weight=OVERESTIMATE_WEIGHT,  # 낮은 피크 영역 과대예측 페널티 가중치
+        global_high_threshold=global_high_threshold,  # 전체 학습 데이터 기준 고정 threshold
+        global_low_threshold=global_low_threshold  # 전체 학습 데이터 기준 고정 threshold
     )
     opt  = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
@@ -866,7 +1141,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     best_val = float("inf"); best_state=None; noimp=0
     printed_batch_info = False
     for ep in range(1, EPOCHS+1):
-        model.train(); tr_loss_sum=0; tr_mae_sum=0; n=0
+        model.train(); tr_loss_sum=0; tr_mae_sum=0; tr_mse_sum=0; tr_peak_area_penalty_sum=0; tr_delta_loss_sum=0; n=0
         for g in opt.param_groups:
             g['lr'] = warmup_lr(ep, LR, WARMUP_EPOCHS)
 
@@ -879,28 +1154,126 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
             opt.zero_grad()
             pred = model(Xb)
             loss = crit(pred, yb)
+            
+            # mse와 peak_area_penalty 계산 (로깅용)
+            amp_w = 1.0 + AMP_WEIGHT * yb.abs()
+            if yb.shape[1] > 1:
+                slope = torch.relu(yb[:, 1:] - yb[:, :-1])
+                slope = torch.cat([slope[:, :1], slope], dim=1)
+                slope_w = 1.0 + SLOPE_WEIGHT * slope
+            else:
+                slope_w = 1.0
+            weight = amp_w * slope_w
+            mse_batch = (weight * (pred - yb) ** 2).mean()
+            
+            # peak_area_penalty 계산 (피크 높이별 차별화)
+            # 전체 학습 데이터 기준 고정된 threshold 사용
+            high_threshold_val = global_high_threshold
+            low_threshold_val = global_low_threshold
+            
+            # 높은 피크: 과소예측 페널티
+            high_peak_mask = (yb >= high_threshold_val).float()
+            underestimate_mask = (pred < yb).float() * high_peak_mask
+            high_peak_error = (yb - pred) ** 2 * underestimate_mask
+            high_peak_penalty = high_peak_error.sum() / (underestimate_mask.sum() + 1e-8)
+            
+            # 낮은 피크: 과대예측 페널티
+            low_peak_mask = (yb < low_threshold_val).float()
+            overestimate_mask = (pred > yb).float() * low_peak_mask
+            low_peak_error = (pred - yb) ** 2 * overestimate_mask
+            low_peak_penalty = low_peak_error.sum() / (overestimate_mask.sum() + 1e-8)
+            
+            # 중간 피크: 양방향 페널티
+            mid_peak_mask = ((yb >= low_threshold_val) & (yb < high_threshold_val)).float()
+            mid_peak_error = (pred - yb) ** 2 * mid_peak_mask
+            mid_peak_penalty = mid_peak_error.sum() / (mid_peak_mask.sum() + 1e-8)
+            
+            peak_area_penalty_batch = high_peak_penalty + OVERESTIMATE_WEIGHT * low_peak_penalty + 0.5 * mid_peak_penalty
+            
+            # delta_loss 계산 (로깅용)
+            delta_loss_batch = 0.0
+            if yb.shape[1] > 1:
+                delta_pred = pred[:, 1:] - pred[:, :-1]
+                delta_true = yb[:, 1:] - yb[:, :-1]
+                delta_loss_batch = ((delta_pred - delta_true) ** 2).mean()
+            
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             bs=yb.size(0)
             tr_loss_sum += loss.item()*bs; n+=bs
+            tr_mse_sum += mse_batch.item()*bs
+            tr_peak_area_penalty_sum += peak_area_penalty_batch.item()*bs
+            tr_delta_loss_sum += delta_loss_batch.item()*bs if isinstance(delta_loss_batch, torch.Tensor) else 0.0
             tr_mae_sum  += batch_mae_in_original_units(pred, yb, scaler_y)*bs
 
         tr_loss = tr_loss_sum / max(1,n)
         tr_mae  = tr_mae_sum  / max(1,n)
+        tr_mse = tr_mse_sum / max(1,n)
+        tr_peak_area_penalty = tr_peak_area_penalty_sum / max(1,n)
+        tr_delta_loss = tr_delta_loss_sum / max(1,n)
 
-        model.eval(); va_loss_sum=0; va_mae_sum=0; va_corr_sum=0; n=0
+        model.eval(); va_loss_sum=0; va_mae_sum=0; va_corr_sum=0; va_mse_sum=0; va_peak_area_penalty_sum=0; va_delta_loss_sum=0; n=0
         with torch.no_grad():
             for Xb,yb,_ in dl_va:
                 Xb=Xb.to(DEVICE); yb=yb.to(DEVICE)
                 pred = model(Xb); loss = crit(pred,yb)
+                
+                # mse와 peak_area_penalty 계산 (로깅용)
+                amp_w = 1.0 + AMP_WEIGHT * yb.abs()
+                if yb.shape[1] > 1:
+                    slope = torch.relu(yb[:, 1:] - yb[:, :-1])
+                    slope = torch.cat([slope[:, :1], slope], dim=1)
+                    slope_w = 1.0 + SLOPE_WEIGHT * slope
+                else:
+                    slope_w = 1.0
+                weight = amp_w * slope_w
+                mse_batch = (weight * (pred - yb) ** 2).mean()
+                
+                # peak_area_penalty 계산 (피크 높이별 차별화)
+                # 전체 학습 데이터 기준 고정된 threshold 사용
+                high_threshold_val = global_high_threshold
+                low_threshold_val = global_low_threshold
+                
+                # 높은 피크: 과소예측 페널티
+                high_peak_mask = (yb >= high_threshold_val).float()
+                underestimate_mask = (pred < yb).float() * high_peak_mask
+                high_peak_error = (yb - pred) ** 2 * underestimate_mask
+                high_peak_penalty = high_peak_error.sum() / (underestimate_mask.sum() + 1e-8)
+                
+                # 낮은 피크: 과대예측 페널티
+                low_peak_mask = (yb < low_threshold_val).float()
+                overestimate_mask = (pred > yb).float() * low_peak_mask
+                low_peak_error = (pred - yb) ** 2 * overestimate_mask
+                low_peak_penalty = low_peak_error.sum() / (overestimate_mask.sum() + 1e-8)
+                
+                # 중간 피크: 양방향 페널티
+                mid_peak_mask = ((yb >= low_threshold_val) & (yb < high_threshold_val)).float()
+                mid_peak_error = (pred - yb) ** 2 * mid_peak_mask
+                mid_peak_penalty = mid_peak_error.sum() / (mid_peak_mask.sum() + 1e-8)
+                
+                peak_area_penalty_batch = high_peak_penalty + OVERESTIMATE_WEIGHT * low_peak_penalty + 0.5 * mid_peak_penalty
+                
+                # delta_loss 계산 (로깅용)
+                delta_loss_batch = 0.0
+                if yb.shape[1] > 1:
+                    delta_pred = pred[:, 1:] - pred[:, :-1]
+                    delta_true = yb[:, 1:] - yb[:, :-1]
+                    delta_loss_batch = ((delta_pred - delta_true) ** 2).mean()
+                
                 bs=yb.size(0)
                 va_loss_sum += loss.item()*bs; n+=bs
+                va_mse_sum += mse_batch.item()*bs
+                va_peak_area_penalty_sum += peak_area_penalty_batch.item()*bs
+                va_delta_loss_sum += delta_loss_batch.item()*bs if isinstance(delta_loss_batch, torch.Tensor) else 0.0
                 va_mae_sum  += batch_mae_in_original_units(pred, yb, scaler_y)*bs
                 va_corr_sum += batch_corrcoef(pred, yb, scaler_y)*bs
         va_loss = va_loss_sum / max(1,n)
         va_mae  = va_mae_sum  / max(1,n)
         va_corr = va_corr_sum / max(1,n)
+        va_mse = va_mse_sum / max(1,n)
+        va_peak_area_penalty = va_peak_area_penalty_sum / max(1,n)
+        va_delta_loss = va_delta_loss_sum / max(1,n)
 
         scheduler.step()
 
@@ -912,7 +1285,10 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
         print(f"[Epoch {ep:03d}/{EPOCHS}] "
               f"LR={opt.param_groups[0]['lr']:.6f} | "
               f"Loss T/V={tr_loss:.5f}/{va_loss:.5f} | "
-              f"MAE  T/V={tr_mae:.5f}/{va_mae:.5f}"
+              f"MAE  T/V={tr_mae:.5f}/{va_mae:.5f} | "
+              f"MSE T/V={tr_mse:.5f}/{va_mse:.5f} | "
+              f"PeakAreaPenalty T/V={tr_peak_area_penalty:.5f}/{va_peak_area_penalty:.5f} | "
+              f"DeltaLoss T/V={tr_delta_loss:.5f}/{va_delta_loss:.5f} | "
               f"Corr V={va_corr:.3f}")
 
         wandb.log({
@@ -922,6 +1298,12 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
             "loss/val": va_loss,
             "mae/train": tr_mae,
             "mae/val": va_mae,
+            "mse/train": tr_mse,
+            "mse/val": va_mse,
+            "peak_area_penalty/train": tr_peak_area_penalty,
+            "peak_area_penalty/val": va_peak_area_penalty,
+            "delta_loss/train": tr_delta_loss,
+            "delta_loss/val": va_delta_loss,
             "corr/val": va_corr,
             "model/out_scale": model.out_scale.item(),
         })
@@ -938,36 +1320,64 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     if best_state is not None:
         model.load_state_dict({k:v.to(DEVICE) for k,v in best_state.items()})
 
-    # ---- Test & Metrics ----
-    model.eval(); preds=[]; trues=[]; starts=[]
+    # ---- Train & Test Metrics ----
+    def _compute_metrics(yhat, ytrue):
+        mse  = float(np.mean((yhat - ytrue) ** 2))
+        rmse = float(np.sqrt(mse))
+        mae  = float(np.mean(np.abs(yhat - ytrue)))
+        return mse, rmse, mae
+
+    # Train set evaluation
+    model.eval()
+    preds_tr, trues_tr = [], []
     with torch.no_grad():
-        for Xb,yb,i0 in dl_te:
-            Xb=Xb.to(DEVICE)
+        for Xb, yb, _ in dl_tr:
+            Xb = Xb.to(DEVICE)
+            preds_tr.append(model(Xb).detach().cpu().numpy())
+            trues_tr.append(yb.numpy())
+    yhat_tr_sc = np.concatenate(preds_tr, axis=0)
+    ytrue_tr_sc = np.concatenate(trues_tr, axis=0)
+    yhat_tr = scaler_y.inverse_transform(yhat_tr_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
+    ytrue_tr = scaler_y.inverse_transform(ytrue_tr_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
+    mse_tr, rmse_tr, mae_tr = _compute_metrics(yhat_tr, ytrue_tr)
+
+    # Test set evaluation
+    model.eval()
+    preds = []
+    trues = []
+    starts = []
+    with torch.no_grad():
+        for Xb, yb, i0 in dl_te:
+            Xb = Xb.to(DEVICE)
             preds.append(model(Xb).detach().cpu().numpy())
             trues.append(yb.numpy())
             starts.append(i0.numpy())
-    yhat_sc = np.concatenate(preds,axis=0)
-    ytrue_sc= np.concatenate(trues,axis=0)
-    starts  = np.concatenate(starts,axis=0)
+    yhat_sc = np.concatenate(preds, axis=0)
+    ytrue_sc = np.concatenate(trues, axis=0)
+    starts = np.concatenate(starts, axis=0)
 
-    yhat  = scaler_y.inverse_transform(yhat_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
-    ytrue = scaler_y.inverse_transform(ytrue_sc.reshape(-1,1)).reshape(-1,PRED_LEN)
+    yhat = scaler_y.inverse_transform(yhat_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
+    ytrue = scaler_y.inverse_transform(ytrue_sc.reshape(-1, 1)).reshape(-1, PRED_LEN)
 
-    mse  = float(np.mean((yhat-ytrue)**2))
+    mse = float(np.mean((yhat - ytrue) ** 2))
     rmse = float(np.sqrt(mse))
-    mae  = float(np.mean(np.abs(yhat-ytrue)))
+    mae = float(np.mean(np.abs(yhat - ytrue)))
 
     wandb.log({
+        "train/mae": mae_tr,
+        "train/rmse": rmse_tr,
+        "train/mse": mse_tr,
         "test/mae": mae,
         "test/rmse": rmse,
+        "test/mse": mse,
         "test/pred_max": float(yhat.max()),
         "test/true_max": float(ytrue.max()),
     })
 
-    print("\n=== Final Test Metrics ===")
-    print(f"MSE : {mse:.6f}")
-    print(f"RMSE: {rmse:.6f}")
-    print(f"MAE : {mae:.6f}")
+    print("\n=== Final Metrics (Train / Test) ===")
+    print("         {:>10} {:>10} {:>10}".format("MSE", "RMSE", "MAE"))
+    print("  Train: {:>10.6f} {:>10.6f} {:>10.6f}".format(mse_tr, rmse_tr, mae_tr))
+    print("  Test:  {:>10.6f} {:>10.6f} {:>10.6f}".format(mse, rmse, mae))
 
     # =========================
     # Save per-window predictions
@@ -979,22 +1389,7 @@ def train_and_eval(X: np.ndarray, y: np.ndarray, labels: list, feat_names: list,
     print(f"Saved predictions -> {OUT_CSV}")
 
     # =========================
-    # Plot_1: last window (H-step ahead)
-    # =========================
-    last_true = ytrue[-1]; last_pred = yhat[-1]
-    weeks = np.arange(1, PRED_LEN+1)
-    plt.figure(figsize=(10,4))
-    plt.plot(weeks, last_true, label="Truth (last window)", linewidth=2)
-    plt.plot(weeks, last_pred, label="Prediction (last window)", linewidth=2)
-    plt.title("Last Test Window: Truth vs Prediction")
-    plt.xlabel("Horizon (weeks ahead)")
-    plt.ylabel("ILI per 1,000 Population")
-    plt.grid(True); plt.legend()
-    plt.tight_layout(); plt.savefig(PLOT_LAST_WINDOW, dpi=150)
-    print(f"Saved plot -> {PLOT_LAST_WINDOW}")
-
-    # =========================
-    # Plot_2: test reconstruction (weekly avg vs test_ili)
+    # Plot: test reconstruction (weekly avg vs test_ili)
     # =========================
     context = y_va_sc[-SEQ_LEN:]
     y_ct_sc = np.concatenate([context, y_te_sc])              # [SEQ_LEN + test_len]
@@ -1216,7 +1611,6 @@ if __name__ == "__main__":
         print("⚠️  Feature Importance 계산이 수행되지 않았습니다.")
 
     wandb.log({
-        "plot/last_window": wandb.Image(PLOT_LAST_WINDOW),
         "plot/test_reconstruction": wandb.Image(PLOT_TEST_RECON),
         "plot/mae_curves": wandb.Image(PLOT_MA_CURVES),
     })

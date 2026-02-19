@@ -1,0 +1,47 @@
+/Users/yewon/.matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /var/folders/d9/60nxsm7s7tl4lft6pwrfpjfm0000gn/T/matplotlib-eozqa4v4 because there was an issue with the default path (/Users/yewon/.matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+
+Fontconfig error: No writable cache directories
+	/opt/homebrew/var/cache/fontconfig
+	/Users/yewon/.cache/fontconfig
+	/Users/yewon/.fontconfig
+Matplotlib is building the font cache; this may take a moment.
+
+처리 중: /Users/yewon/influenza-prediction-model-1/data/ds_0801_page_1.json
+  발견된 키워드 수: 0
+
+처리 중: /Users/yewon/influenza-prediction-model-1/data/ds_0901_page_1.json
+  발견된 키워드 수: 44
+
+처리 중: /Users/yewon/influenza-prediction-model-1/data/ds_0901_page_2.json
+  발견된 키워드 수: 44
+
+총 키워드 수: 44
+
+키워드별 총 검색 횟수 (상위 20개):
+  감기: 402,138회
+  피로: 72,586회
+  기침: 34,278회
+  독감: 28,816회
+  근육통: 26,054회
+  콧물: 23,670회
+  재채기: 19,804회
+  감기약: 10,468회
+  발열: 7,186회
+  무력감: 5,644회
+  오한: 4,162회
+  고열: 4,146회
+  폐렴: 2,752회
+  해열제: 2,654회
+  인플루엔자: 2,512회
+  목 아픔: 1,136회
+  인후통: 942회
+  목 아플 때: 240회
+  해열진통제: 150회
+  타미플루: 118회
+
+플롯 생성 중...
+전체 키워드 플롯 저장: keyword_distribution_all.png
+상위 10개 키워드 플롯 저장: keyword_distribution_top10.png
+
+완료!
